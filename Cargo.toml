@@ -1,0 +1,34 @@
+[package]
+name = "passforge"
+version = "0.1.0"
+edition = "2021"
+description = "WebAuthn / Passkey relying-party library — server-side registration and authentication ceremonies"
+keywords = ["webauthn", "passkey", "fido2", "authentication", "cryptography"]
+categories = ["authentication", "cryptography"]
+license = "MIT"
+readme = "README.md"
+
+[dependencies]
+# Cryptography: ECDSA P-256, SHA-256, secure random
+ring = "0.17"
+
+# CBOR: authenticator data and attestation objects are CBOR-encoded
+ciborium = "0.2"
+
+# JSON + serde: client data JSON parsing
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Base64URL encoding used throughout WebAuthn wire format
+base64 = "0.22"
+
+# Structured error types for the library
+thiserror = "1"
+
+[dev-dependencies]
+# Ergonomic error handling for the demo binary and integration tests
+anyhow = "1"
+
+[[example]]
+name = "demo"
+path = "examples/demo.rs"
