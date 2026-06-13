@@ -386,3 +386,61 @@ skipping it can introduce authentication bypasses. Step comments (`// §7.1 step
 serve as an audit trail: a reviewer can open the spec and the source file
 side-by-side and confirm each step is handled. Use `/spec-audit` to check
 that all implemented steps are annotated.
+
+---
+
+## Phase 3 — Hardening
+
+Phase 3 (implemented June 2026) turned the library from a working demo into a
+correct and robust implementation. Summary of what changed:
+
+### Panic audit
+
+All `src/` files were audited for `unwrap()` calls. None were found; the
+library already used `expect()` with safety comments for provably-infallible
+conversions (e.g., `try_into()` on slices whose length was just verified).
+
+`#![deny(clippy::unwrap_used)]` was added to `src/lib.rs` to enforce this
+as a compile-time guarantee going forward. `.expect()` in library code is
+still permitted where the preceding bounds check makes the panic impossible.
+
+### Test vectors
+
+Fixed test vectors are stored in `tests/vectors/registration.json` and
+`tests/vectors/authentication.json`. They were generated once by
+`examples/generate_vectors.rs` using a simulated P-256 authenticator and
+committed. The vectors contain pre-encoded `clientDataJSON`,
+`attestationObject`, `authenticatorData`, and `signature` blobs; integration
+tests verify the library parses and accepts them unchanged between runs.
+
+### Edge cases now hardened
+
+| Module | New checks |
+|--------|-----------|
+| `authenticator_data.rs` | credentialIdLength=0, >1023, CBOR key duplicate detection, crv≠1, missing kty/alg/crv/x/y fields, x/y coordinate length != 32, empty COSE input |
+| `client_data.rs` | empty bytes, non-JSON UTF-8, missing type/challenge/origin, empty type field, origin trailing slash, crossOrigin flag |
+| `challenge.rs` | TTL=0 (immediately expired), TTL=u64::MAX (never expired), future created_at, two-call non-equality |
+| `crypto.rs` | 64-byte key (missing 0x04 prefix), empty key, empty signature, wrong-message signature, garbage DER |
+| `registration.rs` | missing attStmt, authData not bytes |
+| `authentication.rs` | sign-count wrap-around (stored=u32::MAX, received=0) now rejected |
+
+### No-panic property
+
+Two fuzz-style tests (`no_panic_on_random_registration_input`,
+`no_panic_on_random_authentication_input`) pass 100 randomly-constructed
+inputs through the full ceremony verification paths and assert no panic occurs.
+Both tests use a deterministic LCG so they are fully reproducible.
+
+### Sign-count boundary fix
+
+The expiry check in `Challenge` was changed from `age > ttl` to `age >= ttl`
+so that a TTL of 0 seconds means the challenge expires at the moment of
+creation, and a challenge exactly at the boundary counts as expired (safer
+default). The change propagates to `challenge::is_expired`,
+`challenge::is_expired_with_max_age`, and `Challenge::is_expired`.
+
+The sign-count check in `authentication.rs` was updated: the old check
+(`received != 0 && received <= stored`) accepted any received=0 value
+regardless of the stored count. The new check (`(stored > 0 || received > 0)
+&& received <= stored`) rejects received=0 when stored>0, catching the
+wrap-around (u32::MAX → 0) case as a `SignCountInvalid` error.

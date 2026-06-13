@@ -183,6 +183,28 @@ reassembles the uncompressed point when parsing the registration response.
 
 ---
 
+## Error handling philosophy
+
+Every error in this library follows three rules:
+
+1. **Typed and named** — every failure mode has its own `WebAuthnError` variant.
+   Callers can match on the exact variant to decide how to respond (log and reject
+   vs. block the user vs. flag for review).
+
+2. **The library never panics** — `#![deny(clippy::unwrap_used)]` is enforced
+   at compile time. `.unwrap()` is a compile error in all library code. This
+   guarantees that malformed, truncated, or adversarial input always produces a
+   `Result::Err`, never a panic. This property is verified by the no-panic fuzz
+   tests in `tests/integration.rs`.
+
+3. **Messages are informative but do not leak secrets** — error messages name
+   the exact failing field and include context (e.g., actual vs. expected length),
+   but never include raw key bytes, signature bytes, or challenge values. A
+   developer can diagnose the problem from the error message alone without a
+   stack trace.
+
+---
+
 ## Known limitations and future work
 
 - **RS256** — the `PublicKey::RS256` variant is defined but not verified. ring

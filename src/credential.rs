@@ -4,7 +4,7 @@ use std::time::{Duration, SystemTime};
 
 use ring::rand::{SecureRandom, SystemRandom};
 
-use crate::error::{WebAuthnError, Result};
+use crate::error::{Result, WebAuthnError};
 
 // ─── Public key ───────────────────────────────────────────────────────────────
 
@@ -118,7 +118,7 @@ impl Challenge {
     pub fn is_expired(&self, ttl_secs: u64) -> bool {
         self.created_at
             .elapsed()
-            .map(|age| age > Duration::from_secs(ttl_secs))
+            .map(|age| age >= Duration::from_secs(ttl_secs))
             .unwrap_or(true)
     }
 }

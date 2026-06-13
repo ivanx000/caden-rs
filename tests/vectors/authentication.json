@@ -1,0 +1,14 @@
+{
+  "authenticator_data_b64": "SZYN5YgOjGh0NBcPZHZgW4_krrmihjLHmVzzuoMdl2MBAAAAAQ",
+  "challenge_b64": "oaKjpKWmp6ipqqusra6vsLGys7S1tre4ubq7vL2-v8A",
+  "client_data_json_b64": "eyJ0eXBlIjoid2ViYXV0aG4uZ2V0IiwiY2hhbGxlbmdlIjoib2FLanBLV21wNmlwcXF1c3JhNnZzTEd5czdTMXRyZTR1YnE3dkwyLXY4QSIsIm9yaWdpbiI6Imh0dHA6Ly9sb2NhbGhvc3QiLCJjcm9zc09yaWdpbiI6ZmFsc2V9",
+  "credential_id_hex": "580b320e2a070750b90306fafe6d69da",
+  "description": "Simulated P-256 authenticator, localhost, authentication",
+  "expected_sign_count": 1,
+  "origin": "http://localhost",
+  "public_key_x_b64": "Hv6bdBkKVfmsCu5MM6ethwZXu_MXfZ9jbGFH-WC6ymk",
+  "public_key_y_b64": "-0kZkptjI3Zjxe6hR4MOnRlF5sWJHH-mQ9RqB_1BRBE",
+  "rp_id": "localhost",
+  "signature_b64": "MEUCICaOeLiy_Re8lS-W_mqXAQswpuj-UOTq7JBweLhe81USAiEAvwW_jUvpv9IXem7H3SADLhmCE_auqS_pdq0rpfWy1lY",
+  "stored_sign_count": 0
+}

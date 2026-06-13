@@ -15,7 +15,7 @@ use crate::challenge::CHALLENGE_MAX_AGE_SECS;
 use crate::client_data;
 use crate::credential::{AuthenticationResult, Challenge, Credential, PublicKey};
 use crate::crypto::{sha256, verify_es256};
-use crate::error::{WebAuthnError, Result};
+use crate::error::{Result, WebAuthnError};
 use crate::registration::RelyingParty;
 
 /// The browser's response after a `navigator.credentials.get()` call.
@@ -140,13 +140,15 @@ fn verify_authentication_inner(
     // ── §7.2 step 25 ─────────────────────────────────────────────────────────
     // Verify the sign count is strictly greater than the stored value.
     //
-    // A received count of 0 means the authenticator does not support counters;
-    // we accept but cannot detect clones. A non-zero received count ≤ stored
-    // count indicates a possible clone or replay.
+    // Per spec: if either counter is non-zero, the received counter must exceed
+    // the stored one. Both being 0 indicates a counter-less authenticator, which
+    // is accepted. A stored non-zero counter with received=0 is rejected: it
+    // could indicate a wrap-around (overflow) or a counter-less authenticator
+    // being substituted for a counter-bearing one — both are suspicious.
     let received = auth_data.sign_count;
     let stored = stored_credential.sign_count;
 
-    if received != 0 && received <= stored {
+    if (stored > 0 || received > 0) && received <= stored {
         return Err(WebAuthnError::SignCountInvalid { stored, received });
     }
 

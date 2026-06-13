@@ -37,9 +37,8 @@ fn main() -> Result<()> {
     // ── Step 1: Generate authenticator keypair ────────────────────────────────
     let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng)
         .map_err(|e| anyhow::anyhow!("failed to generate PKCS8 keypair: {e}"))?;
-    let key_pair =
-        EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, pkcs8.as_ref(), &rng)
-            .map_err(|e| anyhow::anyhow!("failed to load key pair: {e}"))?;
+    let key_pair = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, pkcs8.as_ref(), &rng)
+        .map_err(|e| anyhow::anyhow!("failed to load key pair: {e}"))?;
 
     let public_key_bytes = key_pair.public_key().as_ref().to_vec();
 
@@ -132,9 +131,7 @@ fn main() -> Result<()> {
     match rp.verify_authentication(&stored_credential, &replay_challenge, &replay_response) {
         Err(webauthn::WebAuthnError::SignCountInvalid { stored, received }) => {
             println!("✅ Replay attack correctly rejected");
-            println!(
-                "   Error: Sign count invalid: stored {stored}, received {received}"
-            );
+            println!("   Error: Sign count invalid: stored {stored}, received {received}");
         }
         Ok(_) => panic!("BUG: replay attack should have been rejected!"),
         Err(e) => return Err(e.into()),
@@ -184,16 +181,20 @@ fn make_authenticator_data(
 }
 
 fn encode_cose_key(uncompressed_point: &[u8]) -> Vec<u8> {
-    assert_eq!(uncompressed_point.len(), 65, "expected 0x04 || x(32) || y(32)");
+    assert_eq!(
+        uncompressed_point.len(),
+        65,
+        "expected 0x04 || x(32) || y(32)"
+    );
     let x = uncompressed_point[1..33].to_vec();
     let y = uncompressed_point[33..65].to_vec();
 
     let cose_key = Value::Map(vec![
-        (Value::Integer(1i64.into()), Value::Integer(2i64.into())),    // kty: EC2
+        (Value::Integer(1i64.into()), Value::Integer(2i64.into())), // kty: EC2
         (Value::Integer(3i64.into()), Value::Integer((-7i64).into())), // alg: ES256
         (Value::Integer((-1i64).into()), Value::Integer(1i64.into())), // crv: P-256
-        (Value::Integer((-2i64).into()), Value::Bytes(x)),             // x
-        (Value::Integer((-3i64).into()), Value::Bytes(y)),             // y
+        (Value::Integer((-2i64).into()), Value::Bytes(x)),          // x
+        (Value::Integer((-3i64).into()), Value::Bytes(y)),          // y
     ]);
 
     let mut buf = Vec::new();
@@ -203,9 +204,15 @@ fn encode_cose_key(uncompressed_point: &[u8]) -> Vec<u8> {
 
 fn make_attestation_object(auth_data: &[u8]) -> Vec<u8> {
     let att_obj = Value::Map(vec![
-        (Value::Text("fmt".to_string()), Value::Text("none".to_string())),
+        (
+            Value::Text("fmt".to_string()),
+            Value::Text("none".to_string()),
+        ),
         (Value::Text("attStmt".to_string()), Value::Map(vec![])),
-        (Value::Text("authData".to_string()), Value::Bytes(auth_data.to_vec())),
+        (
+            Value::Text("authData".to_string()),
+            Value::Bytes(auth_data.to_vec()),
+        ),
     ]);
 
     let mut buf = Vec::new();

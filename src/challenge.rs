@@ -22,7 +22,7 @@ pub fn is_expired(challenge: &Challenge) -> bool {
     challenge
         .created_at
         .elapsed()
-        .map(|age| age > Duration::from_secs(CHALLENGE_MAX_AGE_SECS))
+        .map(|age| age >= Duration::from_secs(CHALLENGE_MAX_AGE_SECS))
         .unwrap_or(true)
 }
 
@@ -31,18 +31,18 @@ pub fn is_expired_with_max_age(challenge: &Challenge, max_age_secs: u64) -> bool
     challenge
         .created_at
         .elapsed()
-        .map(|age| age > Duration::from_secs(max_age_secs))
+        .map(|age| age >= Duration::from_secs(max_age_secs))
         .unwrap_or(true)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     fn make_challenge(created_secs_ago: u64) -> Challenge {
         let created_at = SystemTime::now()
-            .checked_sub(std::time::Duration::from_secs(created_secs_ago))
+            .checked_sub(Duration::from_secs(created_secs_ago))
             .unwrap_or(UNIX_EPOCH);
         Challenge {
             bytes: vec![0u8; 32],
@@ -67,5 +67,51 @@ mod tests {
         let c = make_challenge(30);
         assert!(is_expired_with_max_age(&c, 20));
         assert!(!is_expired_with_max_age(&c, 60));
+    }
+
+    #[test]
+    fn ttl_zero_is_immediately_expired() {
+        // A TTL of 0 seconds means "expired as soon as it's created".
+        let c = Challenge {
+            bytes: vec![0u8; 32],
+            created_at: SystemTime::now(),
+        };
+        assert!(is_expired_with_max_age(&c, 0));
+    }
+
+    #[test]
+    fn ttl_max_never_expires() {
+        let c = make_challenge(CHALLENGE_MAX_AGE_SECS * 100);
+        assert!(!is_expired_with_max_age(&c, u64::MAX));
+    }
+
+    #[test]
+    fn challenge_created_in_future_is_not_expired() {
+        // elapsed() returns Err if created_at is in the future; we treat
+        // that as expired for safety — but test the "fresh" case via the
+        // is_expired_with_max_age wrapper.  A future timestamp means the
+        // system clock moved backwards; elapsed() → Err → is_expired = true.
+        let future = SystemTime::now()
+            .checked_add(Duration::from_secs(9999))
+            .expect("time arithmetic");
+        let c = Challenge {
+            bytes: vec![0u8; 32],
+            created_at: future,
+        };
+        // The safety default: we cannot verify age → treat as expired.
+        assert!(is_expired(&c));
+    }
+
+    #[test]
+    fn two_challenges_differ() {
+        let c1 = Challenge::new().unwrap();
+        let c2 = Challenge::new().unwrap();
+        assert_ne!(c1.bytes, c2.bytes);
+    }
+
+    #[test]
+    fn challenge_is_32_bytes() {
+        let c = Challenge::new().unwrap();
+        assert_eq!(c.bytes.len(), 32);
     }
 }

@@ -1,3 +1,11 @@
+// Security libraries must not panic on any input — a panic in a security
+// check aborts the ceremony rather than returning a typed error, potentially
+// allowing callers to misinterpret the outcome. Use ? and explicit error
+// variants everywhere; reserve .expect() for invariants guaranteed by the
+// surrounding bounds checks (e.g. try_into() on a slice whose length was
+// just verified). .unwrap() is unconditionally forbidden in library code.
+#![deny(clippy::unwrap_used)]
+
 //! # webauthn — WebAuthn relying-party library
 //!
 //! Implements the server-side (relying party) logic for the two core
@@ -59,9 +67,9 @@ mod registration;
 pub use authentication::AuthenticatorAssertionResponse;
 pub use challenge::{is_expired, is_expired_with_max_age, CHALLENGE_MAX_AGE_SECS};
 pub use credential::{
-    AttestationType, AuthenticatorAttestationResponse, AuthenticationResult, Challenge, Credential,
+    AttestationType, AuthenticationResult, AuthenticatorAttestationResponse, Challenge, Credential,
     PublicKey, RegistrationResult,
 };
 pub use crypto::{generate_challenge, random_bytes, sha256};
-pub use error::{WebAuthnError, Result};
+pub use error::{Result, WebAuthnError};
 pub use registration::RelyingParty;

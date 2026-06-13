@@ -20,7 +20,7 @@ use crate::credential::{
     AuthenticatorAttestationResponse, Challenge, Credential, PublicKey, RegistrationResult,
 };
 use crate::crypto::sha256;
-use crate::error::{WebAuthnError, Result};
+use crate::error::{Result, WebAuthnError};
 
 // ─── RelyingParty ─────────────────────────────────────────────────────────────
 
@@ -227,7 +227,8 @@ fn parse_attestation_object(data: &[u8]) -> Result<(String, Vec<u8>)> {
     };
 
     let mut fmt: Option<String> = None;
-    let mut auth_data: Option<Vec<u8>> = None;
+    let mut auth_data: Option<Result<Vec<u8>>> = None;
+    let mut has_att_stmt = false;
 
     for (k, v) in map {
         match k {
@@ -237,21 +238,33 @@ fn parse_attestation_object(data: &[u8]) -> Result<(String, Vec<u8>)> {
                 }
             }
             Value::Text(ref key) if key == "authData" => {
-                if let Value::Bytes(b) = v {
-                    auth_data = Some(b);
-                }
+                auth_data = Some(match v {
+                    Value::Bytes(b) => Ok(b),
+                    _ => Err(WebAuthnError::InvalidAttestationObject(
+                        "authData must be CBOR bytes, not another type".to_string(),
+                    )),
+                });
             }
-            // "attStmt" is handled by attestation::verify — not needed here.
+            Value::Text(ref key) if key == "attStmt" => {
+                has_att_stmt = true;
+            }
             _ => {}
         }
     }
 
     let fmt = fmt.ok_or_else(|| {
-        WebAuthnError::InvalidAttestationObject("missing \"fmt\" field".to_string())
+        WebAuthnError::InvalidAttestationObject("missing required field: fmt".to_string())
     })?;
+
     let auth_data = auth_data.ok_or_else(|| {
-        WebAuthnError::InvalidAttestationObject("missing \"authData\" field".to_string())
-    })?;
+        WebAuthnError::InvalidAttestationObject("missing required field: authData".to_string())
+    })??; // first ? unwraps Option, second ? propagates the inner Result
+
+    if !has_att_stmt {
+        return Err(WebAuthnError::InvalidAttestationObject(
+            "missing required field: attStmt".to_string(),
+        ));
+    }
 
     Ok((fmt, auth_data))
 }
@@ -297,15 +310,62 @@ mod tests {
     #[test]
     fn rejects_attestation_object_missing_auth_data() {
         let mut buf = Vec::new();
-        let v = Value::Map(vec![(
-            Value::Text("fmt".to_string()),
-            Value::Text("none".to_string()),
-        )]);
+        let v = Value::Map(vec![
+            (
+                Value::Text("fmt".to_string()),
+                Value::Text("none".to_string()),
+            ),
+            (Value::Text("attStmt".to_string()), Value::Map(vec![])),
+        ]);
         ciborium::into_writer(&v, &mut buf).unwrap();
         let result = parse_attestation_object(&buf);
         assert!(matches!(
             result,
-            Err(WebAuthnError::InvalidAttestationObject(_))
+            Err(WebAuthnError::InvalidAttestationObject(ref m)) if m.contains("authData")
+        ));
+    }
+
+    #[test]
+    fn rejects_attestation_object_missing_att_stmt() {
+        let mut buf = Vec::new();
+        let v = Value::Map(vec![
+            (
+                Value::Text("fmt".to_string()),
+                Value::Text("none".to_string()),
+            ),
+            (
+                Value::Text("authData".to_string()),
+                Value::Bytes(vec![0u8; 37]),
+            ),
+        ]);
+        ciborium::into_writer(&v, &mut buf).unwrap();
+        let result = parse_attestation_object(&buf);
+        assert!(matches!(
+            result,
+            Err(WebAuthnError::InvalidAttestationObject(ref m)) if m.contains("attStmt")
+        ));
+    }
+
+    #[test]
+    fn rejects_auth_data_not_bytes() {
+        // authData is present but is a text string, not bytes.
+        let mut buf = Vec::new();
+        let v = Value::Map(vec![
+            (
+                Value::Text("fmt".to_string()),
+                Value::Text("none".to_string()),
+            ),
+            (Value::Text("attStmt".to_string()), Value::Map(vec![])),
+            (
+                Value::Text("authData".to_string()),
+                Value::Text("not bytes".to_string()),
+            ),
+        ]);
+        ciborium::into_writer(&v, &mut buf).unwrap();
+        let result = parse_attestation_object(&buf);
+        assert!(matches!(
+            result,
+            Err(WebAuthnError::InvalidAttestationObject(ref m)) if m.contains("bytes")
         ));
     }
 }

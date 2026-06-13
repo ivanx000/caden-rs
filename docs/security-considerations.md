@@ -221,6 +221,56 @@ determine which users are registered, so treat the credential table as sensitive
 
 ---
 
+## Phase 3 hardening — no-panic guarantee
+
+### Why `#![deny(clippy::unwrap_used)]`
+
+A panic in a security library is indistinguishable from a crash to the caller.
+If a parsing function panics on malformed authenticator data, the ceremony
+function never returns a typed error — the stack unwinds past any caller
+error-handling code. The caller may log the crash but cannot inspect or
+reason about the specific failure, and in some runtime environments (async
+executors, FFI) panics have undefined or dangerous behavior.
+
+This library adds `#![deny(clippy::unwrap_used)]` to the crate root so that
+`.unwrap()` is a compile error in all library code. `.expect()` is permitted
+only where the surrounding bounds check makes the panic provably impossible
+(e.g., `slice[0..32].try_into().expect("...")` after checking `len >= 37`).
+
+### Input validation philosophy
+
+Authenticator data, client data JSON, and attestation objects all arrive from
+untrusted sources (the browser / client) and must be treated as adversarial.
+This library follows these rules:
+
+1. **Check bounds before indexing** — every slice access is guarded by an
+   explicit length check or uses `.get()` which returns `Option`.
+2. **Return typed errors** — every error case produces a named `WebAuthnError`
+   variant with a descriptive message, never a generic "parse error".
+3. **Never panic on any input** — the fuzz-style tests
+   (`no_panic_on_random_registration_input` and `no_panic_on_random_authentication_input`)
+   verify this property across 100 random inputs of varying lengths.
+
+### Attestation verification scope
+
+This library verifies the `"none"` attestation format only. Any other format
+(packed, tpm, fido-u2f, android-key, apple) is rejected with an explicit error.
+
+**What "none" attestation means:** the authenticator does not provide a
+certificate chain linking it to a known manufacturer. Registration still
+succeeds, and the public key is stored. But you cannot verify:
+- That the key was generated inside genuine FIDO2 hardware
+- The authenticator model or firmware version
+
+If you need attestation chain verification, integrate with the
+[FIDO Metadata Service (MDS)](https://fidoalliance.org/metadata/).
+
+**Known limitation introduced by this scope:** relying parties that require
+high-assurance device binding (banking, government) must validate attestation
+outside this library.
+
+---
+
 ## Summary of security responsibilities
 
 | Property | Enforced by | Notes |

@@ -19,7 +19,7 @@
 //! `"packed"` or use a FIDO Metadata Service (MDS) integration.
 
 use crate::credential::AttestationType;
-use crate::error::{WebAuthnError, Result};
+use crate::error::{Result, WebAuthnError};
 
 /// Verify the attestation statement and return the [`AttestationType`].
 ///
@@ -31,11 +31,7 @@ use crate::error::{WebAuthnError, Result};
 /// # Errors
 /// Returns [`WebAuthnError::InvalidAttestationObject`] for any format other
 /// than `"none"`, since this library cannot verify their statements.
-pub fn verify(
-    fmt: &str,
-    _auth_data: &[u8],
-    _client_data_hash: &[u8],
-) -> Result<AttestationType> {
+pub fn verify(fmt: &str, _auth_data: &[u8], _client_data_hash: &[u8]) -> Result<AttestationType> {
     match fmt {
         // §8.7 — "none" attestation: the authenticator is not attested.
         // The attStmt must be an empty CBOR map, but since we receive it

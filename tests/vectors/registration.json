@@ -1,0 +1,11 @@
+{
+  "attestation_object_b64": "o2NmbXRkbm9uZWdhdHRTdG10oGhhdXRoRGF0YViUSZYN5YgOjGh0NBcPZHZgW4_krrmihjLHmVzzuoMdl2NBAAAAAAAAAAAAAAAAAAAAAAAAAAAAEFgLMg4qBwdQuQMG-v5tadqlAQIDJiABIVggHv6bdBkKVfmsCu5MM6ethwZXu_MXfZ9jbGFH-WC6ymkiWCD7SRmSm2MjdmPF7qFHgw6dGUXmxYkcf6ZD1GoH_UFEEQ",
+  "challenge_b64": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",
+  "client_data_json_b64": "eyJ0eXBlIjoid2ViYXV0aG4uY3JlYXRlIiwiY2hhbGxlbmdlIjoiQVFJREJBVUdCd2dKQ2dzTURRNFBFQkVTRXhRVkZoY1lHUm9iSEIwZUh5QSIsIm9yaWdpbiI6Imh0dHA6Ly9sb2NhbGhvc3QiLCJjcm9zc09yaWdpbiI6ZmFsc2V9",
+  "description": "Simulated P-256 authenticator, localhost, registration",
+  "expected_credential_id_hex": "580b320e2a070750b90306fafe6d69da",
+  "expected_sign_count": 0,
+  "origin": "http://localhost",
+  "rp_id": "localhost",
+  "user_id_hex": "746573742d757365722d766563746f72"
+}
