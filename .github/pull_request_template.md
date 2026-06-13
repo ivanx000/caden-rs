@@ -17,6 +17,6 @@
 - [ ] `docs/` updated if behaviour or architecture changed
 - [ ] `CLAUDE.md` updated if crate structure or design decisions changed
 - [ ] "Known limitations" in `CLAUDE.md` updated if a limitation was resolved
-- [ ] New `PassforgeError` variants have `///` doc comments and test coverage
+- [ ] New `WebAuthnError` variants have `///` doc comments and test coverage
 - [ ] No `unwrap()` in library code (tests and demo are fine)
 - [ ] No `git push` performed — push is always manual

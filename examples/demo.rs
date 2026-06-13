@@ -130,7 +130,7 @@ fn main() -> Result<()> {
     )?;
 
     match rp.verify_authentication(&stored_credential, &replay_challenge, &replay_response) {
-        Err(webauthn::PassforgeError::SignCountInvalid { stored, received }) => {
+        Err(webauthn::WebAuthnError::SignCountInvalid { stored, received }) => {
             println!("✅ Replay attack correctly rejected");
             println!(
                 "   Error: Sign count invalid: stored {stored}, received {received}"

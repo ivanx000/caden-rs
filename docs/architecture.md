@@ -13,7 +13,7 @@ webauthn
 │   └── AuthenticatorAttestationResponse   Registration wire type
 │   └── AuthenticatorAssertionResponse     Authentication wire type
 │
-├── error.rs                PassforgeError enum + Result alias
+├── error.rs                WebAuthnError enum + Result alias
 │
 ├── credential.rs           Domain types
 │   ├── Credential          Stored credential (post-registration)
@@ -33,7 +33,7 @@ webauthn
 │   └── is_expired_with_max_age()  Configurable expiry
 │
 ├── client_data.rs          clientDataJSON parsing
-│   └── parse_client_data() base64url → UTF-8 → JSON → ClientData
+│   └── parse_client_data() raw bytes → UTF-8 → JSON → ClientData
 │
 ├── authenticator_data.rs   Binary authenticator data parsing
 │   ├── parse_authenticator_data()  Raw bytes → AuthenticatorData

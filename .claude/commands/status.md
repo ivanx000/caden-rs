@@ -54,7 +54,7 @@ Public API:
   AuthenticatorAssertionResponse
   Credential, PublicKey, Challenge
   RegistrationResult, AuthenticationResult, AttestationType
-  PassforgeError, Result
+  WebAuthnError, Result
   generate_challenge, is_expired, is_expired_with_max_age
   CHALLENGE_MAX_AGE_SECS
 ================================

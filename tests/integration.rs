@@ -11,7 +11,7 @@ use ring::rand::SystemRandom;
 use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_ASN1_SIGNING};
 
 use webauthn::{
-    AuthenticatorAssertionResponse, AuthenticatorAttestationResponse, Challenge, PassforgeError,
+    AuthenticatorAssertionResponse, AuthenticatorAttestationResponse, Challenge, WebAuthnError,
     RelyingParty,
 };
 
@@ -272,7 +272,7 @@ fn sign_count_equal_fails() {
         .unwrap_err();
     assert!(matches!(
         err,
-        PassforgeError::SignCountInvalid {
+        WebAuthnError::SignCountInvalid {
             stored: 5,
             received: 5
         }
@@ -294,7 +294,7 @@ fn sign_count_lower_fails() {
         .unwrap_err();
     assert!(matches!(
         err,
-        PassforgeError::SignCountInvalid {
+        WebAuthnError::SignCountInvalid {
             stored: 5,
             received: 4
         }
@@ -320,7 +320,7 @@ fn rejects_wrong_type_in_registration() {
     let err = rp
         .verify_registration(&challenge, &response, &[])
         .unwrap_err();
-    assert!(matches!(err, PassforgeError::InvalidClientData(_)));
+    assert!(matches!(err, WebAuthnError::InvalidClientData(_)));
 }
 
 #[test]
@@ -341,7 +341,7 @@ fn rejects_challenge_mismatch_on_registration() {
     let err = rp
         .verify_registration(&challenge, &response, &[])
         .unwrap_err();
-    assert!(matches!(err, PassforgeError::ChallengeMismatch));
+    assert!(matches!(err, WebAuthnError::ChallengeMismatch));
 }
 
 #[test]
@@ -363,7 +363,7 @@ fn rejects_origin_mismatch_on_registration() {
         .unwrap_err();
     assert!(matches!(
         err,
-        PassforgeError::OriginMismatch { expected, got }
+        WebAuthnError::OriginMismatch { expected, got }
         if expected == ORIGIN && got == "https://evil.com"
     ));
 }
@@ -385,7 +385,7 @@ fn rejects_rp_id_hash_mismatch_on_registration() {
     let err = rp
         .verify_registration(&challenge, &response, &[])
         .unwrap_err();
-    assert!(matches!(err, PassforgeError::RpIdHashMismatch));
+    assert!(matches!(err, WebAuthnError::RpIdHashMismatch));
 }
 
 #[test]
@@ -405,7 +405,7 @@ fn rejects_missing_user_present_flag_on_registration() {
     let err = rp
         .verify_registration(&challenge, &response, &[])
         .unwrap_err();
-    assert!(matches!(err, PassforgeError::UserNotPresent));
+    assert!(matches!(err, WebAuthnError::UserNotPresent));
 }
 
 #[test]
@@ -425,7 +425,7 @@ fn rejects_unsupported_attestation_format() {
     let err = rp
         .verify_registration(&challenge, &response, &[])
         .unwrap_err();
-    assert!(matches!(err, PassforgeError::InvalidAttestationObject(_)));
+    assert!(matches!(err, WebAuthnError::InvalidAttestationObject(_)));
 }
 
 #[test]
@@ -439,7 +439,7 @@ fn rejects_invalid_client_data_json() {
     let err = rp
         .verify_registration(&challenge, &response, &[])
         .unwrap_err();
-    assert!(matches!(err, PassforgeError::InvalidClientData(_)));
+    assert!(matches!(err, WebAuthnError::InvalidClientData(_)));
 }
 
 #[test]
@@ -455,7 +455,7 @@ fn rejects_invalid_attestation_object_cbor() {
     let err = rp
         .verify_registration(&challenge, &response, &[])
         .unwrap_err();
-    assert!(matches!(err, PassforgeError::CborDecodeError(_)));
+    assert!(matches!(err, WebAuthnError::CborDecodeError(_)));
 }
 
 #[test]
@@ -482,7 +482,7 @@ fn rejects_expired_challenge() {
     let err = rp
         .verify_registration(&expired_challenge, &response, &[])
         .unwrap_err();
-    assert!(matches!(err, PassforgeError::ChallengeExpired));
+    assert!(matches!(err, WebAuthnError::ChallengeExpired));
 }
 
 // ─── Error cases — authentication ─────────────────────────────────────────────
@@ -500,7 +500,7 @@ fn rejects_challenge_mismatch_on_authentication() {
     let err = rp
         .verify_authentication(&credential, &real_challenge, &response)
         .unwrap_err();
-    assert!(matches!(err, PassforgeError::ChallengeMismatch));
+    assert!(matches!(err, WebAuthnError::ChallengeMismatch));
 }
 
 #[test]
@@ -515,7 +515,7 @@ fn rejects_origin_mismatch_on_authentication() {
     let err = rp
         .verify_authentication(&credential, &challenge, &response)
         .unwrap_err();
-    assert!(matches!(err, PassforgeError::OriginMismatch { .. }));
+    assert!(matches!(err, WebAuthnError::OriginMismatch { .. }));
 }
 
 #[test]
@@ -530,7 +530,7 @@ fn rejects_rp_id_hash_mismatch_on_authentication() {
     let err = rp
         .verify_authentication(&credential, &challenge, &response)
         .unwrap_err();
-    assert!(matches!(err, PassforgeError::RpIdHashMismatch));
+    assert!(matches!(err, WebAuthnError::RpIdHashMismatch));
 }
 
 #[test]
@@ -547,7 +547,7 @@ fn rejects_missing_user_present_flag_on_authentication() {
     let err = rp
         .verify_authentication(&credential, &challenge, &response)
         .unwrap_err();
-    assert!(matches!(err, PassforgeError::UserNotPresent));
+    assert!(matches!(err, WebAuthnError::UserNotPresent));
 }
 
 #[test]
@@ -564,7 +564,7 @@ fn rejects_tampered_signature() {
     let err = rp
         .verify_authentication(&credential, &challenge, &response)
         .unwrap_err();
-    assert!(matches!(err, PassforgeError::SignatureVerificationFailed));
+    assert!(matches!(err, WebAuthnError::SignatureVerificationFailed));
 }
 
 #[test]
@@ -581,7 +581,7 @@ fn rejects_completely_invalid_signature_bytes() {
     let err = rp
         .verify_authentication(&credential, &challenge, &response)
         .unwrap_err();
-    assert!(matches!(err, PassforgeError::SignatureVerificationFailed));
+    assert!(matches!(err, WebAuthnError::SignatureVerificationFailed));
 }
 
 #[test]
@@ -604,7 +604,7 @@ fn rejects_signature_over_wrong_data() {
     let err = rp
         .verify_authentication(&credential, &ch2, &response_for_ch2)
         .unwrap_err();
-    assert!(matches!(err, PassforgeError::SignatureVerificationFailed));
+    assert!(matches!(err, WebAuthnError::SignatureVerificationFailed));
 }
 
 #[test]
@@ -626,7 +626,7 @@ fn rejects_replay_attack_same_sign_count() {
         .unwrap_err();
     assert!(matches!(
         err,
-        PassforgeError::SignCountInvalid {
+        WebAuthnError::SignCountInvalid {
             stored: 2,
             received: 2
         }
@@ -653,7 +653,7 @@ fn rejects_replay_attack_lower_sign_count() {
         .unwrap_err();
     assert!(matches!(
         err,
-        PassforgeError::SignCountInvalid {
+        WebAuthnError::SignCountInvalid {
             stored: 5,
             received: 3
         }

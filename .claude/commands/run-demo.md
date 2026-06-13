@@ -12,7 +12,7 @@ Run the end-to-end webauthn demo binary and print its output.
 2. Print the complete output, including:
    - The registration result (credential ID, public key algorithm)
    - The authentication result (sign count, user verified flag)
-   - The replay attack rejection (the specific `PassforgeError` variant returned)
+   - The replay attack rejection (the specific `WebAuthnError` variant returned)
 
 3. Confirm the final line of output is `All checks passed.`
 

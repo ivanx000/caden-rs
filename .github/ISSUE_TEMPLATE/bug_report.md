@@ -27,7 +27,7 @@ labels: bug
 ## Error output
 
 ```
-// Paste the PassforgeError variant and message here
+// Paste the WebAuthnError variant and message here
 ```
 
 ## Relevant spec section

@@ -23,7 +23,7 @@
 
 use ciborium::value::Value;
 
-use crate::error::{PassforgeError, Result};
+use crate::error::{WebAuthnError, Result};
 
 // ─── Flags bitmask constants ──────────────────────────────────────────────────
 
@@ -111,13 +111,13 @@ pub struct AuthenticatorData {
 /// Parse the raw authenticator data bytes into an [`AuthenticatorData`].
 ///
 /// # Errors
-/// - [`PassforgeError::InvalidAuthenticatorData`] — bytes too short or malformed.
-/// - [`PassforgeError::InvalidPublicKey`] / [`PassforgeError::CborDecodeError`]
+/// - [`WebAuthnError::InvalidAuthenticatorData`] — bytes too short or malformed.
+/// - [`WebAuthnError::InvalidPublicKey`] / [`WebAuthnError::CborDecodeError`]
 ///   — the embedded COSE key cannot be decoded.
 pub fn parse_authenticator_data(data: &[u8]) -> Result<AuthenticatorData> {
     // Minimum: 32 (rpIdHash) + 1 (flags) + 4 (signCount) = 37 bytes.
     if data.len() < 37 {
-        return Err(PassforgeError::InvalidAuthenticatorData(format!(
+        return Err(WebAuthnError::InvalidAuthenticatorData(format!(
             "too short: {} bytes (need at least 37)",
             data.len()
         )));
@@ -163,20 +163,20 @@ pub fn parse_authenticator_data(data: &[u8]) -> Result<AuthenticatorData> {
 /// Decode a CBOR-encoded COSE_Key and return it as a [`CoseKey`].
 ///
 /// Only EC2 keys (kty = 2) are supported. The x and y coordinates are
-/// required; passing a non-EC2 key will return [`PassforgeError::InvalidPublicKey`].
+/// required; passing a non-EC2 key will return [`WebAuthnError::InvalidPublicKey`].
 /// Algorithm validation (e.g. checking `alg == -7`) is the caller's responsibility.
 ///
 /// # Errors
-/// - [`PassforgeError::CborDecodeError`] — input is not valid CBOR.
-/// - [`PassforgeError::InvalidPublicKey`] — missing required fields or unsupported key type.
+/// - [`WebAuthnError::CborDecodeError`] — input is not valid CBOR.
+/// - [`WebAuthnError::InvalidPublicKey`] — missing required fields or unsupported key type.
 pub fn parse_cose_key(data: &[u8]) -> Result<CoseKey> {
     let value: Value = ciborium::from_reader(data)
-        .map_err(|e| PassforgeError::CborDecodeError(format!("COSE key: {e}")))?;
+        .map_err(|e| WebAuthnError::CborDecodeError(format!("COSE key: {e}")))?;
 
     let map = match value {
         Value::Map(m) => m,
         _ => {
-            return Err(PassforgeError::InvalidPublicKey(
+            return Err(WebAuthnError::InvalidPublicKey(
                 "COSE key must be a CBOR map".to_string(),
             ))
         }
@@ -208,32 +208,32 @@ pub fn parse_cose_key(data: &[u8]) -> Result<CoseKey> {
 
     // COSE map key 1 = kty. kty = 2 means EC2 (elliptic curve).
     let kty = get_int(1)
-        .ok_or_else(|| PassforgeError::InvalidPublicKey("missing or non-integer kty".to_string()))?;
+        .ok_or_else(|| WebAuthnError::InvalidPublicKey("missing or non-integer kty".to_string()))?;
 
     if kty != 2 {
-        return Err(PassforgeError::InvalidPublicKey(format!(
+        return Err(WebAuthnError::InvalidPublicKey(format!(
             "unsupported key type: {kty} (only EC2 / kty=2 is supported)"
         )));
     }
 
     // COSE map key 3 = alg. Not validated here — caller checks the algorithm.
     let alg = get_int(3)
-        .ok_or_else(|| PassforgeError::InvalidPublicKey("missing or non-integer alg".to_string()))?;
+        .ok_or_else(|| WebAuthnError::InvalidPublicKey("missing or non-integer alg".to_string()))?;
 
     // COSE map key -1 = crv. crv = 1 means P-256.
     let crv = get_int(-1)
-        .ok_or_else(|| PassforgeError::InvalidPublicKey("missing or non-integer crv".to_string()))?;
+        .ok_or_else(|| WebAuthnError::InvalidPublicKey("missing or non-integer crv".to_string()))?;
 
     // COSE map key -2 = x coordinate.
     let x = get_bytes(-2)
-        .ok_or_else(|| PassforgeError::InvalidPublicKey("missing x coordinate".to_string()))?;
+        .ok_or_else(|| WebAuthnError::InvalidPublicKey("missing x coordinate".to_string()))?;
 
     // COSE map key -3 = y coordinate.
     let y = get_bytes(-3)
-        .ok_or_else(|| PassforgeError::InvalidPublicKey("missing y coordinate".to_string()))?;
+        .ok_or_else(|| WebAuthnError::InvalidPublicKey("missing y coordinate".to_string()))?;
 
     if x.len() != 32 || y.len() != 32 {
-        return Err(PassforgeError::InvalidPublicKey(format!(
+        return Err(WebAuthnError::InvalidPublicKey(format!(
             "P-256 coordinates must be 32 bytes each; got x={}, y={}",
             x.len(),
             y.len()
@@ -247,7 +247,7 @@ pub fn parse_cose_key(data: &[u8]) -> Result<CoseKey> {
 
 fn parse_attested_credential_data(data: &[u8]) -> Result<AttestedCredentialData> {
     if data.len() < 18 {
-        return Err(PassforgeError::InvalidAuthenticatorData(
+        return Err(WebAuthnError::InvalidAuthenticatorData(
             "attested credential data too short (need at least 18 bytes after flags/counter)"
                 .to_string(),
         ));
@@ -266,7 +266,7 @@ fn parse_attested_credential_data(data: &[u8]) -> Result<AttestedCredentialData>
     offset += 2;
 
     if data.len() < offset + cred_id_len {
-        return Err(PassforgeError::InvalidAuthenticatorData(format!(
+        return Err(WebAuthnError::InvalidAuthenticatorData(format!(
             "credential ID length ({cred_id_len}) exceeds remaining data"
         )));
     }
@@ -329,7 +329,7 @@ mod tests {
         let result = parse_authenticator_data(&[0u8; 10]);
         assert!(matches!(
             result,
-            Err(PassforgeError::InvalidAuthenticatorData(_))
+            Err(WebAuthnError::InvalidAuthenticatorData(_))
         ));
     }
 
@@ -390,7 +390,7 @@ mod tests {
         let mut buf = Vec::new();
         ciborium::into_writer(&cose, &mut buf).unwrap();
         let result = parse_cose_key(&buf);
-        assert!(matches!(result, Err(PassforgeError::InvalidPublicKey(_))));
+        assert!(matches!(result, Err(WebAuthnError::InvalidPublicKey(_))));
     }
 
     #[test]
@@ -403,6 +403,6 @@ mod tests {
         let mut buf = Vec::new();
         ciborium::into_writer(&cose, &mut buf).unwrap();
         let result = parse_cose_key(&buf);
-        assert!(matches!(result, Err(PassforgeError::InvalidPublicKey(_))));
+        assert!(matches!(result, Err(WebAuthnError::InvalidPublicKey(_))));
     }
 }

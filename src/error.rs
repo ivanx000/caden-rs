@@ -7,7 +7,7 @@ use thiserror::Error;
 
 /// All errors that can be returned by WebAuthn ceremony verification.
 #[derive(Debug, Error)]
-pub enum PassforgeError {
+pub enum WebAuthnError {
     /// The client data JSON could not be decoded or is structurally invalid.
     #[error("Invalid client data: {0}")]
     InvalidClientData(String),
@@ -81,4 +81,4 @@ pub enum PassforgeError {
 }
 
 /// Convenience alias so callers write `webauthn::Result<T>`.
-pub type Result<T> = std::result::Result<T, PassforgeError>;
+pub type Result<T> = std::result::Result<T, WebAuthnError>;

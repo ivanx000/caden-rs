@@ -9,7 +9,7 @@ use ring::rand::{SecureRandom, SystemRandom};
 use ring::signature::{self, UnparsedPublicKey};
 
 use crate::credential::Challenge;
-use crate::error::{PassforgeError, Result};
+use crate::error::{WebAuthnError, Result};
 
 /// Compute SHA-256 of `data` and return the 32-byte digest.
 ///
@@ -27,13 +27,13 @@ pub fn sha256(data: &[u8]) -> [u8; 32] {
 /// Generate `len` cryptographically random bytes using the OS RNG.
 ///
 /// # Errors
-/// Returns [`PassforgeError::InvalidClientData`] if the system RNG fails
+/// Returns [`WebAuthnError::InvalidClientData`] if the system RNG fails
 /// (extremely unlikely in practice).
 pub fn random_bytes(len: usize) -> Result<Vec<u8>> {
     let rng = SystemRandom::new();
     let mut bytes = vec![0u8; len];
     rng.fill(&mut bytes).map_err(|_| {
-        PassforgeError::InvalidClientData(
+        WebAuthnError::InvalidClientData(
             "system random number generator failed to produce bytes".to_string(),
         )
     })?;
@@ -49,7 +49,7 @@ pub fn random_bytes(len: usize) -> Result<Vec<u8>> {
 /// * `signature` — DER-encoded ASN.1 ECDSA signature, as produced by authenticators.
 ///
 /// # Errors
-/// Returns [`PassforgeError::SignatureVerificationFailed`] if the signature is
+/// Returns [`WebAuthnError::SignatureVerificationFailed`] if the signature is
 /// invalid, the key is malformed, or the public key does not match.
 pub fn verify_es256(
     public_key_uncompressed: &[u8],
@@ -58,7 +58,7 @@ pub fn verify_es256(
 ) -> Result<()> {
     let key = UnparsedPublicKey::new(&signature::ECDSA_P256_SHA256_ASN1, public_key_uncompressed);
     key.verify(message, signature)
-        .map_err(|_| PassforgeError::SignatureVerificationFailed)
+        .map_err(|_| WebAuthnError::SignatureVerificationFailed)
 }
 
 /// Generate a fresh 32-byte [`Challenge`] using the OS cryptographic RNG.

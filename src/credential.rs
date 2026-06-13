@@ -4,7 +4,7 @@ use std::time::{Duration, SystemTime};
 
 use ring::rand::{SecureRandom, SystemRandom};
 
-use crate::error::{PassforgeError, Result};
+use crate::error::{WebAuthnError, Result};
 
 // ─── Public key ───────────────────────────────────────────────────────────────
 
@@ -95,13 +95,13 @@ impl Challenge {
     /// 32 bytes provides 256 bits of entropy — far beyond any brute-force threat.
     ///
     /// # Errors
-    /// Returns [`PassforgeError::InvalidClientData`] if the system RNG fails
+    /// Returns [`WebAuthnError::InvalidClientData`] if the system RNG fails
     /// (extremely unlikely; would indicate a kernel-level failure).
     pub fn new() -> Result<Self> {
         let rng = SystemRandom::new();
         let mut bytes = vec![0u8; 32];
         rng.fill(&mut bytes).map_err(|_| {
-            PassforgeError::InvalidClientData(
+            WebAuthnError::InvalidClientData(
                 "system random number generator failed to produce bytes".to_string(),
             )
         })?;

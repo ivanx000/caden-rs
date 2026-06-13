@@ -63,5 +63,5 @@ pub use credential::{
     PublicKey, RegistrationResult,
 };
 pub use crypto::{generate_challenge, random_bytes, sha256};
-pub use error::{PassforgeError, Result};
+pub use error::{WebAuthnError, Result};
 pub use registration::RelyingParty;

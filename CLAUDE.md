@@ -16,7 +16,7 @@ the server-side verification logic for the two core WebAuthn ceremonies:
   challenge with the stored private key, and the relying party verifies the
   signature and sign count.
 
-The library follows the [W3C WebAuthn Level 3 specification](https://www.w3.org/TR/webauthn-3/).
+The library follows the [W3C WebAuthn Level 2 specification](https://www.w3.org/TR/webauthn-2/).
 
 ### Project goals
 
@@ -34,7 +34,7 @@ The library follows the [W3C WebAuthn Level 3 specification](https://www.w3.org/
 | File | Purpose |
 |------|---------|
 | `src/lib.rs` | Public API surface: `RelyingParty`, wire types, re-exports |
-| `src/error.rs` | `PassforgeError` enum + `Result<T>` alias |
+| `src/error.rs` | `WebAuthnError` enum + `Result<T>` alias |
 | `src/credential.rs` | `Credential`, `PublicKey`, `Challenge`, ceremony result types |
 | `src/crypto.rs` | `sha256`, `verify_es256_signature`, `generate_challenge` |
 | `src/challenge.rs` | Challenge expiry helpers: `is_expired`, `CHALLENGE_MAX_AGE_SECS` |
@@ -78,7 +78,7 @@ authenticator data. `ciborium` is chosen over serde-based CBOR crates because:
 ### `thiserror` for structured errors
 
 `thiserror` generates `Display` and `Error` trait implementations from the
-`#[error("...")]` attribute. This keeps `PassforgeError` definitions DRY —
+`#[error("...")]` attribute. This keeps `WebAuthnError` definitions DRY —
 the display string lives next to the variant declaration — while still
 producing the `std::error::Error` impl that callers expect from a library.
 Errors intentionally never include raw key bytes or challenge values.
@@ -198,7 +198,7 @@ the library. The demo demonstrates:
 
 1. A successful registration
 2. A valid authentication
-3. Replay attack rejection (`PassforgeError::ChallengeMismatch`)
+3. Replay attack rejection (`WebAuthnError::ChallengeMismatch`)
 
 Expected: the final line of output is `All checks passed.`
 
@@ -219,7 +219,7 @@ Unit tests live inside each module under `#[cfg(test)]`. Follow the pattern:
 fn rejects_my_new_error_case() {
     // Arrange: minimal valid state
     // Act: mutate one thing to trigger the error
-    // Assert: match on the specific PassforgeError variant
+    // Assert: match on the specific WebAuthnError variant
 }
 ```
 

@@ -15,7 +15,7 @@ use crate::challenge::CHALLENGE_MAX_AGE_SECS;
 use crate::client_data;
 use crate::credential::{AuthenticationResult, Challenge, Credential, PublicKey};
 use crate::crypto::{sha256, verify_es256};
-use crate::error::{PassforgeError, Result};
+use crate::error::{WebAuthnError, Result};
 use crate::registration::RelyingParty;
 
 /// The browser's response after a `navigator.credentials.get()` call.
@@ -50,7 +50,7 @@ impl RelyingParty {
     /// * `response`          — The assertion response from the authenticator.
     ///
     /// # Errors
-    /// Returns a [`crate::error::PassforgeError`] variant indicating exactly which
+    /// Returns a [`crate::error::WebAuthnError`] variant indicating exactly which
     /// verification step failed, including `SignCountInvalid` for suspected
     /// authenticator clones.
     pub fn verify_authentication(
@@ -73,7 +73,7 @@ fn verify_authentication_inner(
 ) -> Result<AuthenticationResult> {
     // ── Pre-check: challenge expiry ───────────────────────────────────────────
     if challenge.is_expired(CHALLENGE_MAX_AGE_SECS) {
-        return Err(PassforgeError::ChallengeExpired);
+        return Err(WebAuthnError::ChallengeExpired);
     }
 
     // ── §7.2 step 11 ─────────────────────────────────────────────────────────
@@ -100,13 +100,13 @@ fn verify_authentication_inner(
     // Verify rpIdHash = SHA-256(stored credential's rp_id).
     let expected_rp_id_hash = sha256(stored_credential.rp_id.as_bytes());
     if auth_data.rp_id_hash != expected_rp_id_hash {
-        return Err(PassforgeError::RpIdHashMismatch);
+        return Err(WebAuthnError::RpIdHashMismatch);
     }
 
     // ── §7.2 step 20 ─────────────────────────────────────────────────────────
     // Verify the User Present (UP) flag.
     if !auth_data.flags.user_present {
-        return Err(PassforgeError::UserNotPresent);
+        return Err(WebAuthnError::UserNotPresent);
     }
 
     // ── §7.2 step 21 ─────────────────────────────────────────────────────────
@@ -131,7 +131,7 @@ fn verify_authentication_inner(
             verify_es256(&pk, &signed_data, &response.signature)?;
         }
         PublicKey::RS256(_) => {
-            return Err(PassforgeError::InvalidPublicKey(
+            return Err(WebAuthnError::InvalidPublicKey(
                 "RS256 signature verification is not yet implemented".to_string(),
             ))
         }
@@ -147,7 +147,7 @@ fn verify_authentication_inner(
     let stored = stored_credential.sign_count;
 
     if received != 0 && received <= stored {
-        return Err(PassforgeError::SignCountInvalid { stored, received });
+        return Err(WebAuthnError::SignCountInvalid { stored, received });
     }
 
     Ok(AuthenticationResult {

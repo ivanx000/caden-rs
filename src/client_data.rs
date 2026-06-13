@@ -11,7 +11,7 @@
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde::Deserialize;
 
-use crate::error::{PassforgeError, Result};
+use crate::error::{WebAuthnError, Result};
 
 // ─── Raw JSON structure ───────────────────────────────────────────────────────
 
@@ -63,15 +63,15 @@ pub struct ParsedClientData {
 /// for that, so each check can produce a precise error.
 ///
 /// # Errors
-/// - [`PassforgeError::InvalidClientData`] — JSON parse failure or missing fields.
-/// - [`PassforgeError::Base64DecodeError`] — challenge field is not valid base64url.
+/// - [`WebAuthnError::InvalidClientData`] — JSON parse failure or missing fields.
+/// - [`WebAuthnError::Base64DecodeError`] — challenge field is not valid base64url.
 pub fn parse_client_data(raw: &[u8]) -> Result<ParsedClientData> {
     let rcd: RawClientData = serde_json::from_slice(raw)
-        .map_err(|e| PassforgeError::InvalidClientData(format!("JSON parse failed: {e}")))?;
+        .map_err(|e| WebAuthnError::InvalidClientData(format!("JSON parse failed: {e}")))?;
 
     let challenge_bytes = URL_SAFE_NO_PAD
         .decode(&rcd.challenge)
-        .map_err(|e| PassforgeError::Base64DecodeError(format!("challenge field: {e}")))?;
+        .map_err(|e| WebAuthnError::Base64DecodeError(format!("challenge field: {e}")))?;
 
     Ok(ParsedClientData {
         type_: rcd.type_,
@@ -93,9 +93,9 @@ pub fn parse_client_data(raw: &[u8]) -> Result<ParsedClientData> {
 /// * `expected_origin`    — Full origin of your web app, e.g. `"https://example.com"`.
 ///
 /// # Errors
-/// - [`PassforgeError::InvalidClientData`] — type field does not match.
-/// - [`PassforgeError::ChallengeMismatch`] — challenge bytes do not match.
-/// - [`PassforgeError::OriginMismatch`]    — origin does not match.
+/// - [`WebAuthnError::InvalidClientData`] — type field does not match.
+/// - [`WebAuthnError::ChallengeMismatch`] — challenge bytes do not match.
+/// - [`WebAuthnError::OriginMismatch`]    — origin does not match.
 pub fn validate_client_data(
     parsed: &ParsedClientData,
     expected_type: &str,
@@ -104,7 +104,7 @@ pub fn validate_client_data(
 ) -> Result<()> {
     // Verify the ceremony type.
     if parsed.type_ != expected_type {
-        return Err(PassforgeError::InvalidClientData(format!(
+        return Err(WebAuthnError::InvalidClientData(format!(
             "expected type \"{expected_type}\", got \"{}\"",
             parsed.type_
         )));
@@ -112,12 +112,12 @@ pub fn validate_client_data(
 
     // Verify the challenge matches byte-for-byte.
     if parsed.challenge_bytes != expected_challenge {
-        return Err(PassforgeError::ChallengeMismatch);
+        return Err(WebAuthnError::ChallengeMismatch);
     }
 
     // Verify the origin.
     if parsed.origin != expected_origin {
-        return Err(PassforgeError::OriginMismatch {
+        return Err(WebAuthnError::OriginMismatch {
             expected: expected_origin.to_string(),
             got: parsed.origin.clone(),
         });
@@ -165,14 +165,14 @@ mod tests {
     #[test]
     fn rejects_invalid_json() {
         let result = parse_client_data(b"not json at all");
-        assert!(matches!(result, Err(PassforgeError::InvalidClientData(_))));
+        assert!(matches!(result, Err(WebAuthnError::InvalidClientData(_))));
     }
 
     #[test]
     fn rejects_bad_challenge_encoding() {
         let raw = br#"{"type":"webauthn.create","challenge":"!!!","origin":"https://x.com"}"#;
         let result = parse_client_data(raw);
-        assert!(matches!(result, Err(PassforgeError::Base64DecodeError(_))));
+        assert!(matches!(result, Err(WebAuthnError::Base64DecodeError(_))));
     }
 
     #[test]
@@ -196,7 +196,7 @@ mod tests {
         let err =
             validate_client_data(&parsed, "webauthn.create", &challenge, "https://example.com")
                 .unwrap_err();
-        assert!(matches!(err, PassforgeError::InvalidClientData(_)));
+        assert!(matches!(err, WebAuthnError::InvalidClientData(_)));
     }
 
     #[test]
@@ -210,7 +210,7 @@ mod tests {
         let err =
             validate_client_data(&parsed, "webauthn.create", &wrong, "https://example.com")
                 .unwrap_err();
-        assert!(matches!(err, PassforgeError::ChallengeMismatch));
+        assert!(matches!(err, WebAuthnError::ChallengeMismatch));
     }
 
     #[test]
@@ -229,7 +229,7 @@ mod tests {
         .unwrap_err();
         assert!(matches!(
             err,
-            PassforgeError::OriginMismatch { expected, got }
+            WebAuthnError::OriginMismatch { expected, got }
             if expected == "https://example.com" && got == "https://evil.com"
         ));
     }

@@ -19,7 +19,7 @@
 //! `"packed"` or use a FIDO Metadata Service (MDS) integration.
 
 use crate::credential::AttestationType;
-use crate::error::{PassforgeError, Result};
+use crate::error::{WebAuthnError, Result};
 
 /// Verify the attestation statement and return the [`AttestationType`].
 ///
@@ -29,7 +29,7 @@ use crate::error::{PassforgeError, Result};
 /// * `_client_data_hash`— SHA-256(clientDataJSON) (reserved for packed/tpm formats).
 ///
 /// # Errors
-/// Returns [`PassforgeError::InvalidAttestationObject`] for any format other
+/// Returns [`WebAuthnError::InvalidAttestationObject`] for any format other
 /// than `"none"`, since this library cannot verify their statements.
 pub fn verify(
     fmt: &str,
@@ -44,7 +44,7 @@ pub fn verify(
 
         // Any other format would require certificate chain validation against
         // the FIDO Metadata Service — out of scope for this library.
-        other => Err(PassforgeError::InvalidAttestationObject(format!(
+        other => Err(WebAuthnError::InvalidAttestationObject(format!(
             "attestation format \"{other}\" is not supported by this library; \
              only \"none\" is accepted"
         ))),
@@ -66,7 +66,7 @@ mod tests {
         let result = verify("packed", &[], &[]);
         assert!(matches!(
             result,
-            Err(PassforgeError::InvalidAttestationObject(_))
+            Err(WebAuthnError::InvalidAttestationObject(_))
         ));
     }
 
@@ -75,7 +75,7 @@ mod tests {
         let result = verify("fido-u2f", &[], &[]);
         assert!(matches!(
             result,
-            Err(PassforgeError::InvalidAttestationObject(_))
+            Err(WebAuthnError::InvalidAttestationObject(_))
         ));
     }
 
@@ -84,7 +84,7 @@ mod tests {
         let result = verify("not-a-real-format", &[], &[]);
         assert!(matches!(
             result,
-            Err(PassforgeError::InvalidAttestationObject(_))
+            Err(WebAuthnError::InvalidAttestationObject(_))
         ));
     }
 }

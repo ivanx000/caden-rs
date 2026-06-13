@@ -20,7 +20,7 @@ use crate::credential::{
     AuthenticatorAttestationResponse, Challenge, Credential, PublicKey, RegistrationResult,
 };
 use crate::crypto::sha256;
-use crate::error::{PassforgeError, Result};
+use crate::error::{WebAuthnError, Result};
 
 // ─── RelyingParty ─────────────────────────────────────────────────────────────
 
@@ -86,7 +86,7 @@ impl RelyingParty {
     /// * `user_id`   — Your application's identifier for this user.
     ///
     /// # Errors
-    /// Returns a [`PassforgeError`] variant indicating exactly which
+    /// Returns a [`WebAuthnError`] variant indicating exactly which
     /// verification step failed.
     pub fn verify_registration(
         &self,
@@ -110,14 +110,14 @@ fn verify_registration_inner(
     // The spec does not specify where to check this, but rejecting an expired
     // challenge before doing any crypto is the most efficient ordering.
     if challenge.is_expired(CHALLENGE_MAX_AGE_SECS) {
-        return Err(PassforgeError::ChallengeExpired);
+        return Err(WebAuthnError::ChallengeExpired);
     }
 
     // ── §7.1 step 5 ───────────────────────────────────────────────────────────
     // Let JSONtext be the UTF-8 decoding of response.clientDataJSON.
     // response.client_data_json already holds the raw bytes; validate UTF-8.
     let _ = std::str::from_utf8(&response.client_data_json).map_err(|_| {
-        PassforgeError::InvalidClientData("clientDataJSON is not valid UTF-8".to_string())
+        WebAuthnError::InvalidClientData("clientDataJSON is not valid UTF-8".to_string())
     })?;
 
     // ── §7.1 step 6 ───────────────────────────────────────────────────────────
@@ -148,21 +148,21 @@ fn verify_registration_inner(
     // Verify that the rpIdHash in authData is SHA-256(rp.id).
     let expected_rp_id_hash = sha256(rp.id.as_bytes());
     if auth_data.rp_id_hash != expected_rp_id_hash {
-        return Err(PassforgeError::RpIdHashMismatch);
+        return Err(WebAuthnError::RpIdHashMismatch);
     }
 
     // ── §7.1 step 14 ──────────────────────────────────────────────────────────
     // Verify that the User Present (UP) flag is set.
     // A registration without UP is invalid — the user must have been present.
     if !auth_data.flags.user_present {
-        return Err(PassforgeError::UserNotPresent);
+        return Err(WebAuthnError::UserNotPresent);
     }
 
     // ── §7.1 step 16 ──────────────────────────────────────────────────────────
     // Verify that the AT (Attested Credential Data) flag is set.
     // If absent, the authenticator did not include a public key — unusable.
     let cred_data = auth_data.attested_credential_data.ok_or_else(|| {
-        PassforgeError::InvalidAuthenticatorData(
+        WebAuthnError::InvalidAuthenticatorData(
             "attested credential data (AT flag) is required for registration".to_string(),
         )
     })?;
@@ -175,7 +175,7 @@ fn verify_registration_inner(
     // Verify the algorithm is ES256 (COSE alg = -7). Reject anything else
     // because we have no verification path for other algorithms yet.
     if cose_key.alg != -7 {
-        return Err(PassforgeError::UnsupportedAlgorithm(cose_key.alg));
+        return Err(WebAuthnError::UnsupportedAlgorithm(cose_key.alg));
     }
 
     // Convert the CoseKey into our typed PublicKey.
@@ -215,12 +215,12 @@ fn verify_registration_inner(
 /// - `"authData"` (bytes): raw authenticator data
 fn parse_attestation_object(data: &[u8]) -> Result<(String, Vec<u8>)> {
     let value: Value = ciborium::from_reader(data)
-        .map_err(|e| PassforgeError::CborDecodeError(format!("attestation object: {e}")))?;
+        .map_err(|e| WebAuthnError::CborDecodeError(format!("attestation object: {e}")))?;
 
     let map = match value {
         Value::Map(m) => m,
         _ => {
-            return Err(PassforgeError::InvalidAttestationObject(
+            return Err(WebAuthnError::InvalidAttestationObject(
                 "attestation object must be a CBOR map".to_string(),
             ))
         }
@@ -247,10 +247,10 @@ fn parse_attestation_object(data: &[u8]) -> Result<(String, Vec<u8>)> {
     }
 
     let fmt = fmt.ok_or_else(|| {
-        PassforgeError::InvalidAttestationObject("missing \"fmt\" field".to_string())
+        WebAuthnError::InvalidAttestationObject("missing \"fmt\" field".to_string())
     })?;
     let auth_data = auth_data.ok_or_else(|| {
-        PassforgeError::InvalidAttestationObject("missing \"authData\" field".to_string())
+        WebAuthnError::InvalidAttestationObject("missing \"authData\" field".to_string())
     })?;
 
     Ok((fmt, auth_data))
@@ -266,7 +266,7 @@ mod tests {
     fn rejects_invalid_attestation_object_cbor() {
         let bad_bytes = &[0xFF, 0x00, 0x00];
         let result = parse_attestation_object(bad_bytes);
-        assert!(matches!(result, Err(PassforgeError::CborDecodeError(_))));
+        assert!(matches!(result, Err(WebAuthnError::CborDecodeError(_))));
     }
 
     #[test]
@@ -275,7 +275,7 @@ mod tests {
         let result = parse_attestation_object(integer_cbor);
         assert!(matches!(
             result,
-            Err(PassforgeError::InvalidAttestationObject(_))
+            Err(WebAuthnError::InvalidAttestationObject(_))
         ));
     }
 
@@ -290,7 +290,7 @@ mod tests {
         let result = parse_attestation_object(&buf);
         assert!(matches!(
             result,
-            Err(PassforgeError::InvalidAttestationObject(_))
+            Err(WebAuthnError::InvalidAttestationObject(_))
         ));
     }
 
@@ -305,7 +305,7 @@ mod tests {
         let result = parse_attestation_object(&buf);
         assert!(matches!(
             result,
-            Err(PassforgeError::InvalidAttestationObject(_))
+            Err(WebAuthnError::InvalidAttestationObject(_))
         ));
     }
 }
