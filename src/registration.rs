@@ -12,8 +12,9 @@
 use ciborium::value::Value;
 use std::time::SystemTime;
 
+use crate::algorithm::COSE_ES256;
 use crate::attestation;
-use crate::authenticator_data;
+use crate::authenticator_data::{self, CoseKey};
 use crate::challenge::CHALLENGE_MAX_AGE_SECS;
 use crate::client_data;
 use crate::credential::{
@@ -168,20 +169,14 @@ fn verify_registration_inner(
     })?;
 
     // ── §7.1 step 17 ──────────────────────────────────────────────────────────
-    // Extract the COSE public key from the attested credential data.
-    let cose_key = cred_data.public_key;
-
-    // ── §7.1 step 17 (algorithm check) ────────────────────────────────────────
-    // Verify the algorithm is ES256 (COSE alg = -7). Reject anything else
-    // because we have no verification path for other algorithms yet.
-    if cose_key.alg != -7 {
-        return Err(WebAuthnError::UnsupportedAlgorithm(cose_key.alg));
-    }
-
-    // Convert the CoseKey into our typed PublicKey.
-    let public_key = PublicKey::ES256 {
-        x: cose_key.x,
-        y: cose_key.y,
+    // Extract the COSE public key and convert it to a typed PublicKey.
+    // The parser already validated kty, crv (for EC2), and alg (for RSA).
+    // Here we additionally check that EC2 keys use ES256 (the only EC2 algorithm
+    // we support), and reject any combination we cannot verify.
+    let public_key = match cred_data.public_key {
+        CoseKey::EC2 { alg, x, y, .. } if alg == COSE_ES256 => PublicKey::ES256 { x, y },
+        CoseKey::EC2 { alg, .. } => return Err(WebAuthnError::UnsupportedAlgorithm(alg)),
+        CoseKey::RSA { n, e, .. } => PublicKey::RS256 { n, e },
     };
 
     // ── §7.1 step 19 ──────────────────────────────────────────────────────────

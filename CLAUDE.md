@@ -10,11 +10,14 @@ This is a **WebAuthn relying-party library** written in Rust. It implements
 the server-side verification logic for the two core WebAuthn ceremonies:
 
 - **Registration** (`navigator.credentials.create`) — the authenticator generates
-  a P-256 keypair, and the relying party verifies the attestation and stores the
-  public key and credential ID.
+  a keypair (P-256 or RSA), and the relying party verifies the attestation and
+  stores the public key and credential ID.
 - **Authentication** (`navigator.credentials.get`) — the authenticator signs a
   challenge with the stored private key, and the relying party verifies the
   signature and sign count.
+
+Supported algorithms: **ES256** (ECDSA P-256, COSE `-7`) and **RS256** (RSA PKCS#1
+v1.5 SHA-256, COSE `-257`).
 
 The library follows the [W3C WebAuthn Level 2 specification](https://www.w3.org/TR/webauthn-2/).
 
@@ -35,16 +38,18 @@ The library follows the [W3C WebAuthn Level 2 specification](https://www.w3.org/
 |------|---------|
 | `src/lib.rs` | Public API surface: `RelyingParty`, wire types, re-exports |
 | `src/error.rs` | `WebAuthnError` enum + `Result<T>` alias |
-| `src/credential.rs` | `Credential`, `PublicKey`, `Challenge`, ceremony result types |
-| `src/crypto.rs` | `sha256`, `verify_es256_signature`, `generate_challenge` |
+| `src/credential.rs` | `Credential`, `PublicKey { ES256, RS256 }`, `Challenge`, result types |
+| `src/algorithm.rs` | COSE algorithm constants: `COSE_ES256=-7`, `COSE_RS256=-257`, kty values |
+| `src/der.rs` | DER builder: `rsa_components_to_der(n,e)` → RSAPublicKey for ring |
+| `src/crypto.rs` | `sha256`, `verify_es256`, `verify_rs256`, `generate_challenge` |
 | `src/challenge.rs` | Challenge expiry helpers: `is_expired`, `CHALLENGE_MAX_AGE_SECS` |
 | `src/client_data.rs` | `clientDataJSON` base64url → JSON → `ClientData` |
-| `src/authenticator_data.rs` | Authenticator data binary format → `AuthenticatorData` |
+| `src/authenticator_data.rs` | Binary authenticator data → `AuthenticatorData`; `CoseKey` enum |
 | `src/attestation.rs` | Attestation statement verification ("none" format) |
-| `src/registration.rs` | §7.1 registration ceremony steps |
-| `src/authentication.rs` | §7.2 authentication ceremony steps |
-| `examples/demo.rs` | End-to-end demo that runs without a browser |
-| `tests/integration.rs` | Full pipeline integration tests using real P-256 keys |
+| `src/registration.rs` | §7.1 registration ceremony; dispatches `CoseKey` → `PublicKey` |
+| `src/authentication.rs` | §7.2 authentication ceremony; dispatches `PublicKey` → verifier |
+| `examples/demo.rs` | End-to-end demo: ES256 and RS256 registration/auth/replay |
+| `tests/integration.rs` | Integration tests for ES256 and RS256 full ceremony flows |
 
 ---
 
@@ -53,7 +58,7 @@ The library follows the [W3C WebAuthn Level 2 specification](https://www.w3.org/
 ### `ring` over RustCrypto
 
 `ring` is used for all cryptographic operations (ECDSA P-256 verification,
-SHA-256, CSPRNG). Reasons:
+RSA PKCS#1 v1.5 verification, SHA-256, CSPRNG). Reasons:
 
 - **Audit lineage**: ring descends from BoringSSL, which has a longer and
   broader audit history than the RustCrypto family.
@@ -147,7 +152,7 @@ are either delegated to the caller or intentionally out of scope for a library.
 | §7.2 step 20 | User Present (UP) flag must be set | inline check |
 | §7.2 step 21 | UV check — optional, delegated to caller | noted in comment |
 | §7.2 step 23 | Decode DER signature bytes (base64url → bytes) | inline |
-| §7.2 step 24 | Verify ECDSA-P256-SHA256 over `authData \|\| SHA-256(clientDataJSON)` | `crypto::verify_es256_signature` |
+| §7.2 step 24 | Verify signature over `authData \|\| SHA-256(clientDataJSON)` | `crypto::verify_es256` or `crypto::verify_rs256` |
 | §7.2 step 25 | Sign count must be strictly greater than stored value | inline check |
 
 ---

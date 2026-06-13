@@ -17,15 +17,27 @@ webauthn
 │
 ├── credential.rs           Domain types
 │   ├── Credential          Stored credential (post-registration)
-│   ├── PublicKey           ES256 / RS256 public key wrapper
+│   ├── PublicKey           ES256 { x, y } / RS256 { n, e } public key wrapper
 │   ├── Challenge           Random bytes + creation timestamp
 │   ├── RegistrationResult  Return value of verify_registration
 │   ├── AuthenticationResult Return value of verify_authentication
 │   └── AttestationType     None / SelfAttestation
 │
+├── algorithm.rs            COSE algorithm + key-type constants
+│   ├── COSE_ES256 = -7     ECDSA P-256 with SHA-256
+│   ├── COSE_RS256 = -257   RSA PKCS#1 v1.5 with SHA-256
+│   ├── COSE_KTY_EC2 = 2    EC2 key type
+│   ├── COSE_KTY_RSA = 3    RSA key type
+│   └── COSE_CRV_P256 = 1   P-256 curve
+│
+├── der.rs                  Minimal DER builder for RSA public keys
+│   ├── rsa_components_to_der()  (n, e) → SEQUENCE { INTEGER n, INTEGER e }
+│   └── der_length / der_sequence / der_integer / der_bit_string / der_oid
+│
 ├── crypto.rs               Cryptographic primitives (delegated to ring)
 │   ├── sha256()            SHA-256 digest
 │   ├── verify_es256()      ECDSA P-256 verification
+│   ├── verify_rs256()      RSA PKCS#1 v1.5 SHA-256 verification
 │   └── generate_challenge() 32-byte CSPRNG challenge
 │
 ├── challenge.rs            Challenge lifecycle helpers
@@ -37,16 +49,18 @@ webauthn
 │
 ├── authenticator_data.rs   Binary authenticator data parsing
 │   ├── parse_authenticator_data()  Raw bytes → AuthenticatorData
-│   └── (internal) parse_cose_key()  CBOR COSE key → PublicKey
+│   └── (internal) parse_cose_key()  CBOR COSE key → CoseKey enum
+│         ├── CoseKey::EC2 { alg, crv, x, y }   for ES256
+│         └── CoseKey::RSA { alg, n, e }         for RS256
 │
 ├── attestation.rs          Attestation statement verification
 │   └── verify()            Only "none" format currently supported
 │
 ├── registration.rs         §7.1 registration ceremony
-│   └── verify_registration()  All steps in spec order, cited by step number
+│   └── verify_registration()  Dispatches CoseKey → PublicKey::ES256 or ::RS256
 │
 └── authentication.rs       §7.2 authentication ceremony
-    └── verify_authentication()  All steps in spec order, cited by step number
+    └── verify_authentication()  Dispatches PublicKey → verify_es256 or verify_rs256
 ```
 
 ---
@@ -75,7 +89,8 @@ AuthenticatorAttestationResponse
                       ├─ aaguid [0..16]
                       ├─ credential_id
                       └─ COSE key (CBOR) → parse_cose_key()
-                            └─ x, y → 0x04 || x || y → PublicKey::ES256
+                            ├─ kty=2 (EC2): x, y → 0x04 || x || y → PublicKey::ES256
+                            └─ kty=3 (RSA): n, e → PublicKey::RS256
 
 → attestation::verify(fmt, ...)   [only "none" accepted]
 → Credential { id, public_key, sign_count, user_id, rp_id, created_at }
@@ -101,8 +116,10 @@ Stored Credential + AuthenticatorAssertionResponse
         build verification data:
         authData bytes || clientDataHash
                │
-        verify_es256(stored_public_key, data, signature)
-         [ring ECDSA_P256_SHA256_ASN1]
+        dispatch on PublicKey variant:
+         ES256 → verify_es256()  [ring ECDSA_P256_SHA256_ASN1]
+         RS256 → rsa_components_to_der(n,e) → verify_rs256()
+                  [ring RSA_PKCS1_2048_8192_SHA256]
                │
         check sign_count > stored
          [SignCountInvalid if not]
@@ -158,15 +175,28 @@ internal types (`ClientData`, `AuthenticatorData`) are richer, fully parsed
 representations. Keeping them separate means the parsing code is testable
 independently of the rest of the verification logic.
 
-### Why does the public key use the uncompressed point format?
+### Algorithm dispatch
+
+`PublicKey` is an enum with two variants: `ES256 { x, y }` and `RS256 { n, e }`.
+The authentication ceremony matches on the variant and calls the appropriate
+verifier. Adding a third algorithm (e.g., EdDSA) means extending the enum,
+adding a COSE parser branch, and adding a `verify_ed25519` function — no changes
+to the ceremony control flow.
+
+### Why does ES256 use the uncompressed point format?
 
 ring's `ECDSA_P256_SHA256_ASN1` verifier expects public keys as uncompressed EC
-points: `0x04 || x (32 bytes) || y (32 bytes)`. This is the ANSI X9.62 format
-and the one most commonly found in the WebAuthn ecosystem. Storing the key in
-this format means no conversion is needed at authentication time.
+points: `0x04 || x (32 bytes) || y (32 bytes)`. COSE keys encode `x` and `y`
+separately; the library reassembles the uncompressed point at authentication time.
 
-COSE keys use raw `x` and `y` bytes separately. This library extracts them and
-reassembles the uncompressed point when parsing the registration response.
+### Why does RS256 use RSAPublicKey (not SubjectPublicKeyInfo)?
+
+ring's RSA verification API (`RSA_PKCS1_2048_8192_SHA256` with `UnparsedPublicKey`)
+parses the public key as an `RSAPublicKey` per RFC 3447 §A.1.1:
+`SEQUENCE { INTEGER n, INTEGER e }`. This is the inner format, without the
+SubjectPublicKeyInfo wrapper (OID + BIT STRING). `der.rs` builds exactly this
+structure. The empirical evidence: `ring::rsa::KeyPair::public().as_ref()`
+returns 270 bytes (RSAPublicKey), not 294 bytes (SubjectPublicKeyInfo).
 
 ---
 
@@ -207,8 +237,8 @@ Every error in this library follows three rules:
 
 ## Known limitations and future work
 
-- **RS256** — the `PublicKey::RS256` variant is defined but not verified. ring
-  supports RSA, so adding verification is straightforward.
+- **EdDSA / Ed25519** — not supported; would require `ring`'s Ed25519 verify path.
+- **ES384 / ES512** — not supported; would require P-384/P-521 ring API.
 - **Packed attestation** — requires certificate chain validation against the FIDO
   MDS. Substantial additional code.
 - **Extension data** — authenticator data extensions are silently ignored.

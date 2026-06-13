@@ -23,6 +23,7 @@
 
 use ciborium::value::Value;
 
+use crate::algorithm::{COSE_CRV_P256, COSE_KTY_EC2, COSE_KTY_RSA, COSE_RS256};
 use crate::error::{Result, WebAuthnError};
 
 // ─── Flags bitmask constants ──────────────────────────────────────────────────
@@ -38,6 +39,9 @@ const FLAG_ED: u8 = 0x80;
 
 /// Maximum sane credential ID length. Values above this indicate corrupt data.
 const MAX_CREDENTIAL_ID_LEN: usize = 1023;
+
+/// Minimum RSA modulus length in bytes (2048-bit key = 256 bytes).
+const MIN_RSA_N_LEN: usize = 256;
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -56,21 +60,44 @@ pub struct AuthenticatorFlags {
 
 /// A decoded COSE_Key from the credential's authenticator data.
 ///
-/// This struct represents an EC2 key (kty = 2). The `alg` field carries the
-/// COSE algorithm identifier; the caller is responsible for checking it is
-/// the expected value (e.g. `-7` for ES256) before using the key.
+/// Two key types are supported:
+/// - `EC2`: elliptic-curve (kty = 2). Carries `crv`, `x`, and `y`.
+/// - `RSA`: RSA public key (kty = 3). Carries `n` and `e`.
+///
+/// The `alg` field in each variant holds the COSE algorithm identifier;
+/// the registration ceremony validates it against the expected value.
 #[derive(Debug, Clone)]
-pub struct CoseKey {
-    /// Key type (COSE map key `1`). Value `2` = EC2 (elliptic-curve).
-    pub kty: i64,
-    /// Algorithm (COSE map key `3`). Value `-7` = ES256.
-    pub alg: i64,
-    /// Curve (COSE map key `-1`). Value `1` = P-256.
-    pub crv: i64,
-    /// X coordinate (COSE map key `-2`). 32 bytes for P-256.
-    pub x: Vec<u8>,
-    /// Y coordinate (COSE map key `-3`). 32 bytes for P-256.
-    pub y: Vec<u8>,
+pub enum CoseKey {
+    /// EC2 key — typically P-256 with ES256 (alg = -7).
+    EC2 {
+        /// Algorithm (COSE map key `3`). Value `-7` = ES256.
+        alg: i64,
+        /// Curve (COSE map key `-1`). Value `1` = P-256.
+        crv: i64,
+        /// X coordinate (COSE map key `-2`). 32 bytes for P-256.
+        x: Vec<u8>,
+        /// Y coordinate (COSE map key `-3`). 32 bytes for P-256.
+        y: Vec<u8>,
+    },
+    /// RSA key — RS256 (alg = -257).
+    RSA {
+        /// Algorithm (COSE map key `3`). Value `-257` = RS256.
+        alg: i64,
+        /// Modulus (COSE map key `-1`). At least 256 bytes for a 2048-bit key.
+        n: Vec<u8>,
+        /// Public exponent (COSE map key `-2`). Typically `[0x01, 0x00, 0x01]`.
+        e: Vec<u8>,
+    },
+}
+
+impl CoseKey {
+    /// Return the COSE algorithm identifier for this key.
+    pub fn alg(&self) -> i64 {
+        match self {
+            CoseKey::EC2 { alg, .. } => *alg,
+            CoseKey::RSA { alg, .. } => *alg,
+        }
+    }
 }
 
 /// Credential data embedded in the authenticator data during registration.
@@ -165,9 +192,10 @@ pub fn parse_authenticator_data(data: &[u8]) -> Result<AuthenticatorData> {
 
 /// Decode a CBOR-encoded COSE_Key and return it as a [`CoseKey`].
 ///
-/// Only EC2 keys (kty = 2, crv = 1 / P-256) are supported. The x and y
-/// coordinates must each be exactly 32 bytes. Algorithm validation (e.g.
-/// checking `alg == -7` for ES256) is the caller's responsibility.
+/// Both EC2 (kty = 2) and RSA (kty = 3) keys are supported.
+/// For EC2: validates crv == 1 (P-256) and that x, y are each 32 bytes.
+/// For RSA: validates alg == -257 and that n is at least 256 bytes.
+/// Algorithm validation for EC2 (e.g. checking alg == -7) is the caller's responsibility.
 ///
 /// # Errors
 /// - [`WebAuthnError::CborDecodeError`] — input is not valid CBOR.
@@ -227,17 +255,28 @@ pub fn parse_cose_key(data: &[u8]) -> Result<CoseKey> {
         })
     };
 
-    // COSE map key 1 = kty. kty = 2 means EC2 (elliptic curve).
+    // COSE map key 1 = kty. Dispatch on key type.
     let kty = get_int(1).ok_or_else(|| {
         WebAuthnError::InvalidPublicKey("missing required field: kty".to_string())
     })?;
 
-    if kty != 2 {
-        return Err(WebAuthnError::InvalidPublicKey(format!(
-            "unsupported key type: {kty} (only EC2 / kty=2 is supported)"
-        )));
+    if kty == COSE_KTY_EC2 {
+        parse_ec2_key(&get_int, &get_bytes)
+    } else if kty == COSE_KTY_RSA {
+        parse_rsa_key(&get_int, &get_bytes)
+    } else {
+        Err(WebAuthnError::InvalidPublicKey(format!(
+            "unsupported key type: {kty} (supported: EC2=2, RSA=3)"
+        )))
     }
+}
 
+// ─── Internal helpers ─────────────────────────────────────────────────────────
+
+fn parse_ec2_key(
+    get_int: &impl Fn(i64) -> Option<i64>,
+    get_bytes: &impl Fn(i64) -> Option<Vec<u8>>,
+) -> Result<CoseKey> {
     // COSE map key 3 = alg. Caller checks the specific algorithm value.
     let alg = get_int(3).ok_or_else(|| {
         WebAuthnError::InvalidPublicKey("missing required field: alg".to_string())
@@ -248,7 +287,7 @@ pub fn parse_cose_key(data: &[u8]) -> Result<CoseKey> {
         WebAuthnError::InvalidPublicKey("missing required field: crv".to_string())
     })?;
 
-    if crv != 1 {
+    if crv != COSE_CRV_P256 {
         return Err(WebAuthnError::InvalidPublicKey(format!(
             "unsupported curve: {crv} (only P-256 / crv=1 is supported)"
         )));
@@ -275,16 +314,46 @@ pub fn parse_cose_key(data: &[u8]) -> Result<CoseKey> {
         )));
     }
 
-    Ok(CoseKey {
-        kty,
-        alg,
-        crv,
-        x,
-        y,
-    })
+    Ok(CoseKey::EC2 { alg, crv, x, y })
 }
 
-// ─── Internal helpers ─────────────────────────────────────────────────────────
+fn parse_rsa_key(
+    get_int: &impl Fn(i64) -> Option<i64>,
+    get_bytes: &impl Fn(i64) -> Option<Vec<u8>>,
+) -> Result<CoseKey> {
+    // COSE map key 3 = alg. For RSA keys we require RS256 = -257.
+    let alg = get_int(3).ok_or_else(|| {
+        WebAuthnError::InvalidPublicKey("missing required field: alg".to_string())
+    })?;
+
+    if alg != COSE_RS256 {
+        return Err(WebAuthnError::UnsupportedAlgorithm(alg));
+    }
+
+    // COSE map key -1 = n (modulus).
+    let n = get_bytes(-1)
+        .ok_or_else(|| WebAuthnError::InvalidPublicKey("missing required field: n".to_string()))?;
+
+    if n.len() < MIN_RSA_N_LEN {
+        return Err(WebAuthnError::InvalidPublicKey(format!(
+            "RSA modulus must be at least {} bytes (2048-bit), got {}",
+            MIN_RSA_N_LEN,
+            n.len()
+        )));
+    }
+
+    // COSE map key -2 = e (public exponent).
+    let e = get_bytes(-2)
+        .ok_or_else(|| WebAuthnError::InvalidPublicKey("missing required field: e".to_string()))?;
+
+    if e.is_empty() {
+        return Err(WebAuthnError::InvalidPublicKey(
+            "RSA exponent (e) must not be empty".to_string(),
+        ));
+    }
+
+    Ok(CoseKey::RSA { alg, n, e })
+}
 
 fn parse_attested_credential_data(data: &[u8]) -> Result<AttestedCredentialData> {
     // Need at least: 16 (aaguid) + 2 (credentialIdLength) = 18 bytes.
@@ -401,6 +470,21 @@ mod tests {
             (Value::Integer((-1i64).into()), Value::Integer(crv.into())),
             (Value::Integer((-2i64).into()), Value::Bytes(x.to_vec())),
             (Value::Integer((-3i64).into()), Value::Bytes(y.to_vec())),
+        ]);
+        let mut buf = Vec::new();
+        ciborium::into_writer(&cose, &mut buf).unwrap();
+        buf
+    }
+
+    fn make_rsa_cose_key_cbor(n: &[u8], e: &[u8]) -> Vec<u8> {
+        let cose = Value::Map(vec![
+            (Value::Integer(1i64.into()), Value::Integer(3i64.into())), // kty: RSA
+            (
+                Value::Integer(3i64.into()),
+                Value::Integer((-257i64).into()),
+            ), // alg: RS256
+            (Value::Integer((-1i64).into()), Value::Bytes(n.to_vec())), // n
+            (Value::Integer((-2i64).into()), Value::Bytes(e.to_vec())), // e
         ]);
         let mut buf = Vec::new();
         ciborium::into_writer(&cose, &mut buf).unwrap();
@@ -537,7 +621,7 @@ mod tests {
         assert!(matches!(err, WebAuthnError::InvalidAuthenticatorData(_)));
     }
 
-    // ── parse_cose_key ───────────────────────────────────────────────────────
+    // ── parse_cose_key — EC2 ─────────────────────────────────────────────────
 
     #[test]
     fn parse_cose_key_valid_es256() {
@@ -545,11 +629,20 @@ mod tests {
         let y = vec![0x02u8; 32];
         let cbor = make_cose_key_cbor(&x, &y);
         let key = parse_cose_key(&cbor).unwrap();
-        assert_eq!(key.kty, 2);
-        assert_eq!(key.alg, -7);
-        assert_eq!(key.crv, 1);
-        assert_eq!(key.x, x);
-        assert_eq!(key.y, y);
+        match key {
+            CoseKey::EC2 {
+                alg,
+                crv,
+                x: kx,
+                y: ky,
+            } => {
+                assert_eq!(alg, -7);
+                assert_eq!(crv, 1);
+                assert_eq!(kx, x);
+                assert_eq!(ky, y);
+            }
+            _ => panic!("expected EC2 key"),
+        }
     }
 
     #[test]
@@ -628,19 +721,16 @@ mod tests {
     }
 
     #[test]
-    fn parse_cose_key_rejects_wrong_kty() {
-        // kty = 3 (RSA) — not supported
+    fn parse_cose_key_rejects_unsupported_kty() {
+        // kty = 4 (symmetric) — not supported at all
         let cose = Value::Map(vec![
-            (Value::Integer(1i64.into()), Value::Integer(3i64.into())),
-            (
-                Value::Integer(3i64.into()),
-                Value::Integer((-257i64).into()),
-            ),
+            (Value::Integer(1i64.into()), Value::Integer(4i64.into())),
+            (Value::Integer(3i64.into()), Value::Integer((-7i64).into())),
         ]);
         let mut buf = Vec::new();
         ciborium::into_writer(&cose, &mut buf).unwrap();
         let err = parse_cose_key(&buf).unwrap_err();
-        assert!(matches!(err, WebAuthnError::InvalidPublicKey(ref m) if m.contains("3")));
+        assert!(matches!(err, WebAuthnError::InvalidPublicKey(ref m) if m.contains("4")));
     }
 
     #[test]
@@ -703,5 +793,94 @@ mod tests {
     fn parse_cose_key_rejects_empty_input() {
         let err = parse_cose_key(&[]).unwrap_err();
         assert!(matches!(err, WebAuthnError::CborDecodeError(_)));
+    }
+
+    // ── parse_cose_key — RS256 ───────────────────────────────────────────────
+
+    #[test]
+    fn parse_cose_key_valid_rs256() {
+        let n = vec![0x01u8; 256]; // 2048-bit modulus (high bit clear — no DER pad needed here)
+        let e = vec![0x01u8, 0x00, 0x01];
+        let cbor = make_rsa_cose_key_cbor(&n, &e);
+        let key = parse_cose_key(&cbor).unwrap();
+        match key {
+            CoseKey::RSA { alg, n: kn, e: ke } => {
+                assert_eq!(alg, -257);
+                assert_eq!(kn, n);
+                assert_eq!(ke, e);
+            }
+            _ => panic!("expected RSA key"),
+        }
+    }
+
+    #[test]
+    fn parse_cose_key_rs256_rejects_short_modulus() {
+        // n = 255 bytes — below the 256-byte (2048-bit) minimum.
+        let n = vec![0x01u8; 255];
+        let e = vec![0x01u8, 0x00, 0x01];
+        let cbor = make_rsa_cose_key_cbor(&n, &e);
+        let err = parse_cose_key(&cbor).unwrap_err();
+        assert!(matches!(err, WebAuthnError::InvalidPublicKey(ref m) if m.contains("255")));
+    }
+
+    #[test]
+    fn parse_cose_key_rs256_rejects_missing_n() {
+        let cose = Value::Map(vec![
+            (Value::Integer(1i64.into()), Value::Integer(3i64.into())),
+            (
+                Value::Integer(3i64.into()),
+                Value::Integer((-257i64).into()),
+            ),
+            // -1 (n) absent
+            (
+                Value::Integer((-2i64).into()),
+                Value::Bytes(vec![0x01, 0x00, 0x01]),
+            ),
+        ]);
+        let mut buf = Vec::new();
+        ciborium::into_writer(&cose, &mut buf).unwrap();
+        let err = parse_cose_key(&buf).unwrap_err();
+        assert!(matches!(err, WebAuthnError::InvalidPublicKey(ref m) if m.contains("n")));
+    }
+
+    #[test]
+    fn parse_cose_key_rs256_rejects_missing_e() {
+        let cose = Value::Map(vec![
+            (Value::Integer(1i64.into()), Value::Integer(3i64.into())),
+            (
+                Value::Integer(3i64.into()),
+                Value::Integer((-257i64).into()),
+            ),
+            (
+                Value::Integer((-1i64).into()),
+                Value::Bytes(vec![0x01u8; 256]),
+            ),
+            // -2 (e) absent
+        ]);
+        let mut buf = Vec::new();
+        ciborium::into_writer(&cose, &mut buf).unwrap();
+        let err = parse_cose_key(&buf).unwrap_err();
+        assert!(matches!(err, WebAuthnError::InvalidPublicKey(ref m) if m.contains("e")));
+    }
+
+    #[test]
+    fn parse_cose_key_rsa_with_wrong_alg_returns_unsupported() {
+        // kty=3 (RSA) but alg=-7 (ES256) — algorithm mismatch
+        let cose = Value::Map(vec![
+            (Value::Integer(1i64.into()), Value::Integer(3i64.into())),
+            (Value::Integer(3i64.into()), Value::Integer((-7i64).into())),
+            (
+                Value::Integer((-1i64).into()),
+                Value::Bytes(vec![0x01u8; 256]),
+            ),
+            (
+                Value::Integer((-2i64).into()),
+                Value::Bytes(vec![0x01, 0x00, 0x01]),
+            ),
+        ]);
+        let mut buf = Vec::new();
+        ciborium::into_writer(&cose, &mut buf).unwrap();
+        let err = parse_cose_key(&buf).unwrap_err();
+        assert!(matches!(err, WebAuthnError::UnsupportedAlgorithm(-7)));
     }
 }

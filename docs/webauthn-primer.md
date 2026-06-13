@@ -214,6 +214,41 @@ device-bound WebAuthn credential.
 
 ---
 
+## COSE algorithm identifiers
+
+WebAuthn public keys are encoded using the COSE (CBOR Object Signing and Encryption)
+standard. The algorithm is identified by an integer in the COSE key map:
+
+| Algorithm | COSE ID | Key type (kty) | Notes |
+|-----------|---------|----------------|-------|
+| ES256     | -7      | EC2 (kty=2)    | ECDSA P-256 with SHA-256. Mandatory-to-implement per spec. |
+| RS256     | -257    | RSA (kty=3)    | RSA PKCS#1 v1.5 with SHA-256. Legacy devices. |
+| EdDSA     | -8      | OKP (kty=1)    | Ed25519 or Ed448. Not yet supported by this library. |
+| ES384     | -35     | EC2 (kty=2)    | ECDSA P-384 with SHA-384. Not yet supported. |
+
+The COSE key map for an ES256 key looks like:
+```
+{
+  1: 2,          // kty: EC2
+  3: -7,         // alg: ES256
+  -1: 1,         // crv: P-256
+  -2: <bytes>,   // x coordinate (32 bytes)
+  -3: <bytes>,   // y coordinate (32 bytes)
+}
+```
+
+For RS256:
+```
+{
+  1: 3,          // kty: RSA
+  3: -257,       // alg: RS256
+  -1: <bytes>,   // n: modulus (≥256 bytes for 2048-bit key)
+  -2: <bytes>,   // e: exponent (typically [0x01, 0x00, 0x01] = 65537)
+}
+```
+
+---
+
 ## Key terms
 
 | Term | Meaning |

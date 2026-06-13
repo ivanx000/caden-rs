@@ -221,6 +221,38 @@ determine which users are registered, so treat the credential table as sensitive
 
 ---
 
+## Algorithm considerations
+
+### ES256 vs RS256
+
+| Property | ES256 (ECDSA P-256) | RS256 (RSA 2048) |
+|----------|---------------------|------------------|
+| COSE alg ID | -7 | -257 |
+| Key size | 64 bytes (x+y) | ≥256 bytes modulus |
+| Signature size | 64–72 bytes (DER ASN.1) | 256 bytes (2048-bit) |
+| Speed | Fast | Slower |
+| Security level | ~128-bit | ~112-bit |
+| Common on | FIDO2 hardware keys, passkeys | Legacy FIDO U2F, older hardware |
+
+Both algorithms are verified using `ring` with the same no-panic, no-custom-crypto
+guarantee. The COSE key type determines which path is taken:
+
+- `kty=2` (EC2), `alg=-7` → `verify_es256` with ring's `ECDSA_P256_SHA256_ASN1`
+- `kty=3` (RSA), `alg=-257` → `rsa_components_to_der(n, e)` + `verify_rs256`
+  with ring's `RSA_PKCS1_2048_8192_SHA256`
+
+ring enforces a minimum 2048-bit RSA key. Keys shorter than 2048 bits are rejected
+with `SignatureVerificationFailed`.
+
+### Why ES256 is preferred
+
+ES256 is the mandatory-to-implement algorithm in the WebAuthn spec (§5.8.5). All
+FIDO2-certified authenticators support it. Modern passkey implementations use P-256.
+RS256 is supported for backward compatibility with older FIDO U2F credentials and
+legacy authenticators that predate the FIDO2 era.
+
+---
+
 ## Phase 3 hardening — no-panic guarantee
 
 ### Why `#![deny(clippy::unwrap_used)]`
@@ -281,7 +313,7 @@ outside this library.
 | Origin binding | Library | Exact string match |
 | RP ID binding | Library | SHA-256 comparison |
 | User presence | Library | UP flag check |
-| Signature validity | Library (`ring` ECDSA) | Constant-time |
+| Signature validity | Library (`ring` ECDSA/RSA) | Constant-time |
 | Sign count monotonicity | Library | Non-zero counts only |
 | User verification | **Caller** | Check `user_verified` if required |
 | HTTPS enforcement | **Caller** / infrastructure | Browsers require it |

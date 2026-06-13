@@ -10,20 +10,42 @@ use crate::error::{Result, WebAuthnError};
 
 /// The public key extracted from a COSE key structure during registration.
 ///
-/// ES256 (P-256 ECDSA with SHA-256) is the algorithm implemented and by far
-/// the most common used by passkey authenticators. RS256 is present as a
-/// placeholder; signature verification for it is not yet implemented.
+/// Two algorithms are supported:
+/// - **ES256** — ECDSA P-256 with SHA-256 (COSE alg `-7`). Most common.
+/// - **RS256** — RSA PKCS#1 v1.5 with SHA-256 (COSE alg `-257`). Used by
+///   older YubiKey 4-series devices and Windows Hello.
 #[derive(Debug, Clone)]
 pub enum PublicKey {
-    /// P-256 ECDSA public key.
+    /// P-256 ECDSA public key (COSE alg `-7`, kty `2`).
     ///
     /// `x` and `y` are the 32-byte affine coordinates of the public point.
     /// To obtain the 65-byte uncompressed point for ring, prepend `0x04`:
     /// `0x04 || x (32 bytes) || y (32 bytes)`.
     ES256 { x: Vec<u8>, y: Vec<u8> },
 
-    /// RSA-PKCS1v15 SHA-256 public key. (Not yet implemented — Phase 2.)
-    RS256(Vec<u8>),
+    /// RSA PKCS#1 v1.5 SHA-256 public key (COSE alg `-257`, kty `3`).
+    ///
+    /// `n` is the big-endian modulus (256 bytes for a 2048-bit key).
+    /// `e` is the big-endian public exponent (typically `[0x01, 0x00, 0x01]`).
+    RS256 { n: Vec<u8>, e: Vec<u8> },
+}
+
+impl PublicKey {
+    /// Return the COSE algorithm identifier for this key.
+    pub fn algorithm(&self) -> i64 {
+        match self {
+            PublicKey::ES256 { .. } => crate::algorithm::COSE_ES256,
+            PublicKey::RS256 { .. } => crate::algorithm::COSE_RS256,
+        }
+    }
+
+    /// Return a human-readable description of the key type.
+    pub fn key_type(&self) -> &'static str {
+        match self {
+            PublicKey::ES256 { .. } => "EC2 P-256",
+            PublicKey::RS256 { .. } => "RSA 2048",
+        }
+    }
 }
 
 // ─── Stored credential ────────────────────────────────────────────────────────

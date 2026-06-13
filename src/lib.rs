@@ -45,18 +45,31 @@
 //! let stored = result.credential;
 //! ```
 //!
+//! ## Supported algorithms
+//!
+//! | Algorithm | COSE ID | Description |
+//! |-----------|---------|-------------|
+//! | ES256     | `-7`    | ECDSA P-256 with SHA-256 — recommended, most common |
+//! | RS256     | `-257`  | RSA PKCS#1 v1.5 with SHA-256 — legacy devices |
+//!
+//! EdDSA and ES384 are not yet supported. See the
+//! [COSE algorithm registry](https://www.iana.org/assignments/cose/cose.xhtml)
+//! for the full list of identifiers.
+//!
 //! ## Spec references
 //!
 //! - [W3C WebAuthn Level 2](https://www.w3.org/TR/webauthn-2/)
 //! - [RFC 8152 — COSE](https://www.rfc-editor.org/rfc/rfc8152)
 
 // Internal modules
+pub mod algorithm;
 pub mod attestation;
 pub mod authenticator_data;
 pub mod challenge;
 pub mod client_data;
 pub mod credential;
 pub mod crypto;
+pub mod der;
 pub mod error;
 
 mod authentication;
@@ -64,12 +77,13 @@ mod registration;
 
 // ─── Public re-exports ────────────────────────────────────────────────────────
 
+pub use algorithm::{COSE_ES256, COSE_RS256};
 pub use authentication::AuthenticatorAssertionResponse;
 pub use challenge::{is_expired, is_expired_with_max_age, CHALLENGE_MAX_AGE_SECS};
 pub use credential::{
     AttestationType, AuthenticationResult, AuthenticatorAttestationResponse, Challenge, Credential,
     PublicKey, RegistrationResult,
 };
-pub use crypto::{generate_challenge, random_bytes, sha256};
+pub use crypto::{generate_challenge, random_bytes, rsa_components_to_der, sha256};
 pub use error::{Result, WebAuthnError};
 pub use registration::RelyingParty;
