@@ -4,7 +4,7 @@ A WebAuthn relying-party library written in Rust.
 
 This library implements the server-side ceremony verification logic for both WebAuthn
 flows — registration and authentication — following the
-[W3C WebAuthn Level 2 specification](https://www.w3.org/TR/webauthn-2/).
+[W3C WebAuthn Level 3 specification](https://www.w3.org/TR/webauthn-3/).
 It is built as a portfolio project demonstrating practical applied cryptography,
 correct protocol implementation, and idiomatic Rust.
 
@@ -37,12 +37,15 @@ worthless without private keys), and password reuse (each site gets a unique key
 |---------|--------|
 | Registration ceremony (§7.1) | Implemented |
 | Authentication ceremony (§7.2) | Implemented |
-| ES256 (ECDSA P-256 + SHA-256) | Implemented |
+| ES256 (ECDSA P-256 + SHA-256, COSE -7) | Implemented |
+| RS256 (RSA PKCS#1 v1.5 + SHA-256, COSE -257) | Implemented |
 | Attestation format `"none"` | Implemented |
 | Sign-count replay attack detection | Implemented |
-| Challenge generation (32-byte random) | Implemented |
-| RS256 (RSA PKCS#1v1.5 + SHA-256) | Struct defined, verification not yet impl |
+| Challenge generation (32-byte CSPRNG) | Implemented |
+| No-panic guarantee on adversarial input | Implemented (`#![deny(clippy::unwrap_used)]`) |
+| Fixed test vectors (registration + authentication) | Implemented |
 | Packed / FIDO-U2F / TPM attestation | Not implemented |
+| EdDSA / Ed25519 | Not implemented |
 | Token binding | Not implemented |
 | FIDO Metadata Service (MDS) lookup | Not implemented |
 | Attestation trust chain validation | Not implemented |
@@ -92,20 +95,23 @@ let auth_result = rp.verify_authentication(&stored, &auth_challenge, &auth_respo
 stored.sign_count = auth_result.new_sign_count;
 ```
 
-Run the self-contained demo to see a full registration → authentication → replay-attack
-sequence without a browser:
+Run the self-contained demo to see full registration → authentication → replay-attack
+sequences for both ES256 and RS256 without a browser:
 
 ```
 cargo run --example demo
 ```
+
+Expected output ends with: `All checks passed.`
 
 ---
 
 ## Running tests
 
 ```
-cargo test          # unit + integration tests
-cargo clippy        # lint (zero-warning policy)
+cargo test          # 101 unit + 40 integration + 2 doc tests
+cargo clippy        # lint (zero-warning policy enforced by -D warnings)
+cargo fmt --check   # formatting
 cargo doc --open    # API documentation
 ```
 
@@ -123,17 +129,21 @@ cargo doc --open    # API documentation
   `SHA-256(rp_id)`. This binds the credential to the relying party identifier.
 
 - **Challenge freshness** — the challenge in `clientDataJSON` must match the
-  server-issued challenge byte-for-byte. The relying party must invalidate the
-  challenge after use (single-use enforcement is the caller's responsibility).
+  server-issued challenge byte-for-byte. Single-use enforcement is the caller's
+  responsibility.
 
 - **User presence** — the UP flag in authenticator data must be set. The
   authenticator confirmed that a human was physically present.
 
-- **Cryptographic signature** — the ECDSA-P256-SHA256 signature over
-  `authData || SHA-256(clientDataJSON)` is verified using `ring`.
+- **Cryptographic signature** — the signature over `authData || SHA-256(clientDataJSON)`
+  is verified using `ring`:
+  - ES256: ECDSA P-256 with SHA-256 (`ring::signature::ECDSA_P256_SHA256_ASN1`)
+  - RS256: RSA PKCS#1 v1.5 with SHA-256 (`ring::signature::RSA_PKCS1_2048_8192_SHA256`,
+    minimum 2048-bit key enforced)
 
 - **Sign count** — a non-zero received count must be strictly greater than the
-  stored count. A violation indicates a possible cloned authenticator.
+  stored count. A violation (including wrap-around from u32::MAX → 0) indicates a
+  possible cloned authenticator.
 
 ### What the caller must provide
 
@@ -155,9 +165,17 @@ cargo doc --open    # API documentation
 - **Cloned authenticators with zero counters** — if `sign_count == 0` the spec
   allows accepting the assertion (the authenticator simply doesn't count). Clone
   detection is unavailable in this case.
-- **Side-channel attacks** — ring's `verify` provides constant-time comparison of
-  the signature, but this library itself does not claim constant-time credential
-  lookups or error responses.
+- **Side-channel attacks** — `ring`'s verifiers provide constant-time signature
+  comparison, but this library does not claim constant-time credential lookups or
+  error responses.
+
+### No-panic guarantee
+
+`#![deny(clippy::unwrap_used)]` is enforced across all library code. `.unwrap()` is
+a compile error; every code path on malformed or adversarial input returns a typed
+`WebAuthnError` rather than panicking. Two fuzz-style tests
+(`no_panic_on_random_registration_input`, `no_panic_on_random_authentication_input`)
+pass 100 randomly-constructed inputs through each ceremony and assert no panic occurs.
 
 ---
 
@@ -165,7 +183,7 @@ cargo doc --open    # API documentation
 
 | Crate | Purpose |
 |-------|---------|
-| `ring` 0.17 | ECDSA P-256 signature verification, SHA-256, CSPRNG |
+| `ring` 0.17 | ECDSA P-256 + RSA PKCS#1 v1.5 signature verification, SHA-256, CSPRNG |
 | `ciborium` 0.2 | CBOR decoding for authenticator data and attestation objects |
 | `serde` + `serde_json` 1 | `clientDataJSON` parsing |
 | `base64` 0.22 | URL-safe base64 encoding/decoding |
@@ -175,15 +193,16 @@ cargo doc --open    # API documentation
 
 ## References
 
-- [W3C Web Authentication Level 2](https://www.w3.org/TR/webauthn-2/)
+- [W3C Web Authentication Level 3](https://www.w3.org/TR/webauthn-3/)
+- [RFC 9052 — CBOR Object Signing and Encryption (COSE)](https://www.rfc-editor.org/rfc/rfc9052)
+- [RFC 3447 — RSA Cryptography Specifications (PKCS#1)](https://www.rfc-editor.org/rfc/rfc3447)
 - [FIDO Alliance CTAP2 specification](https://fidoalliance.org/specs/fido-v2.0-ps-20190130/)
-- [RFC 8152 — CBOR Object Signing and Encryption (COSE)](https://www.rfc-editor.org/rfc/rfc8152)
 - [NIST SP 800-63B — Digital Identity Guidelines](https://pages.nist.gov/800-63-3/sp800-63b.html)
 - [passkeys.dev — developer documentation](https://passkeys.dev)
 
 ---
 
-> **Note:** This is a learning and portfolio project. It is not production-hardened,
-> has not been security audited, and is missing several features required for
-> production use (full attestation, metadata service integration, token binding).
-> Do not use it to protect real user accounts without significant additional work.
+> **Note:** This is a portfolio project. It has not been security audited and is
+> missing several features required for production use (full attestation chain
+> validation, metadata service integration, token binding). Do not use it to protect
+> real user accounts without significant additional work.
