@@ -30,15 +30,6 @@
         ]
       }
     ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash .claude/scripts/auto-commit.sh"
-          }
-        ]
-      }
-    ]
+    "Stop": []
   }
 }
