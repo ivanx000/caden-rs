@@ -8,7 +8,7 @@
 //! 3. Verify the ECDSA signature over `authData || SHA-256(clientDataJSON)`.
 //! 4. Check the sign count to detect cloned authenticators.
 //!
-//! Spec: https://www.w3.org/TR/webauthn-2/#sctn-verifying-assertion
+//! Spec: <https://www.w3.org/TR/webauthn-2/#sctn-verifying-assertion>
 
 use crate::authenticator_data;
 use crate::challenge::CHALLENGE_MAX_AGE_SECS;

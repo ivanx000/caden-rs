@@ -13,41 +13,57 @@
 
 //! # webauthn — WebAuthn relying-party library
 //!
-//! Implements the server-side (relying party) logic for the two core
-//! WebAuthn ceremonies:
+//! Server-side (relying party) verification for the two core WebAuthn ceremonies:
 //!
-//! - **Registration** — the authenticator generates a keypair and the relying
-//!   party verifies and stores the public key.
-//! - **Authentication** — the authenticator signs a challenge with the private
-//!   key and the relying party verifies the signature.
-//!
-//! > **Learning project** — this library demonstrates a correct implementation
-//! > of the W3C WebAuthn spec. It is not intended for production use without
-//! > additional review: challenge single-use enforcement, credential uniqueness
-//! > checks, and FIDO Metadata Service integration are all the caller's
-//! > responsibility.
+//! - **Registration** (`navigator.credentials.create`) — the authenticator generates
+//!   a public/private keypair. The relying party verifies the attestation and stores
+//!   the public key and credential ID.
+//! - **Authentication** (`navigator.credentials.get`) — the authenticator signs a
+//!   challenge with the stored private key. The relying party verifies the signature
+//!   and sign count.
 //!
 //! ## Quick start
 //!
 //! ```rust,no_run
-//! use webauthn::{RelyingParty, AuthenticatorAttestationResponse};
-//! use webauthn::Challenge;
+//! use webauthn::{
+//!     AuthenticatorAssertionResponse, AuthenticatorAttestationResponse,
+//!     Challenge, RelyingParty,
+//! };
 //!
-//! // 1. Configure the relying party once, at startup.
+//! // Configure the relying party once at startup.
 //! let rp = RelyingParty::new("example.com", "https://example.com", "My Service");
 //!
-//! // 2. Issue a registration challenge for this user.
-//! let challenge = Challenge::new().unwrap();
+//! // ── Registration ──────────────────────────────────────────────────────────
 //!
-//! // 3. Receive the attestation response from the browser.
-//! # let response = AuthenticatorAttestationResponse {
+//! // Issue a challenge, send it to the browser, receive the attestation response.
+//! let reg_challenge = Challenge::new().expect("RNG failure");
+//! # let reg_response = AuthenticatorAttestationResponse {
 //! #     client_data_json: vec![],
 //! #     attestation_object: vec![],
 //! # };
-//! let result = rp.verify_registration(&challenge, &response, b"user-id-42").unwrap();
 //!
-//! // 4. Store result.credential in your database.
-//! let stored = result.credential;
+//! // Verify the registration and persist the returned credential.
+//! let reg_result = rp
+//!     .verify_registration(&reg_challenge, &reg_response, b"user-id-42")
+//!     .expect("registration failed");
+//! let stored_credential = reg_result.credential;
+//!
+//! // ── Authentication ────────────────────────────────────────────────────────
+//!
+//! // Issue a new challenge, send it to the browser, receive the assertion response.
+//! let auth_challenge = Challenge::new().expect("RNG failure");
+//! # let auth_response = AuthenticatorAssertionResponse {
+//! #     client_data_json: vec![],
+//! #     authenticator_data: vec![],
+//! #     signature: vec![],
+//! #     user_handle: None,
+//! # };
+//!
+//! // Verify the assertion and update the stored sign count.
+//! let auth_result = rp
+//!     .verify_authentication(&stored_credential, &auth_challenge, &auth_response)
+//!     .expect("authentication failed");
+//! // Persist auth_result.new_sign_count to your database.
 //! ```
 //!
 //! ## Supported algorithms
@@ -55,15 +71,33 @@
 //! | Algorithm | COSE ID | Description |
 //! |-----------|---------|-------------|
 //! | ES256     | `-7`    | ECDSA P-256 with SHA-256 — recommended, most common |
-//! | RS256     | `-257`  | RSA PKCS#1 v1.5 with SHA-256 — legacy devices |
+//! | RS256     | `-257`  | RSA PKCS#1 v1.5 with SHA-256 — legacy YubiKey 4, Windows Hello |
 //!
-//! EdDSA and ES384 are not yet supported. See the
+//! EdDSA and ES384 are not supported. See the
 //! [COSE algorithm registry](https://www.iana.org/assignments/cose/cose.xhtml)
 //! for the full list of identifiers.
+//!
+//! ## Security properties
+//!
+//! - **No unsafe code** — `#![forbid(unsafe_code)]` is enforced at compile time.
+//!   All cryptographic operations are delegated to [`ring`], which descends from
+//!   BoringSSL and manages its own unsafe code behind a safe API boundary.
+//! - **No panics** — `#![deny(clippy::unwrap_used)]` prevents `.unwrap()` in library
+//!   code. Every error path returns a typed [`WebAuthnError`] variant.
+//! - **No custom crypto** — signature verification, hashing, and random number
+//!   generation are all inside `ring`'s audited boundary.
+//! - **Caller responsibilities** — challenge single-use enforcement, credential
+//!   uniqueness checks, and FIDO Metadata Service integration are out of scope.
+//!
+//! > **Learning project** — this library is a portfolio demonstration of a correct
+//! > WebAuthn implementation. For production use, consider
+//! > [`webauthn-rs`](https://crates.io/crates/webauthn-rs), which includes FIDO MDS
+//! > integration and a broader attestation format set.
 //!
 //! ## Spec references
 //!
 //! - [W3C WebAuthn Level 2](https://www.w3.org/TR/webauthn-2/)
+//! - [FIDO Alliance specifications](https://fidoalliance.org/specifications/)
 //! - [RFC 8152 — COSE](https://www.rfc-editor.org/rfc/rfc8152)
 
 // Internal modules

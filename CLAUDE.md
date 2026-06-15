@@ -45,10 +45,11 @@ The library follows the [W3C WebAuthn Level 2 specification](https://www.w3.org/
 | `src/challenge.rs` | Challenge expiry helpers: `is_expired`, `CHALLENGE_MAX_AGE_SECS` |
 | `src/client_data.rs` | `clientDataJSON` base64url → JSON → `ClientData` |
 | `src/authenticator_data.rs` | Binary authenticator data → `AuthenticatorData`; `CoseKey` enum |
-| `src/attestation.rs` | Attestation statement verification ("none" format) |
+| `src/attestation.rs` | Attestation verification: "none" + packed self-attestation; detects packed basic |
 | `src/registration.rs` | §7.1 registration ceremony; dispatches `CoseKey` → `PublicKey` |
 | `src/authentication.rs` | §7.2 authentication ceremony; dispatches `PublicKey` → verifier |
 | `examples/demo.rs` | End-to-end demo: ES256 and RS256 registration/auth/replay |
+| `examples/server.rs` | Axum HTTP server: all 5 WebAuthn endpoints with in-memory state |
 | `tests/integration.rs` | Integration tests for ES256 and RS256 full ceremony flows |
 
 ---
@@ -172,8 +173,11 @@ cargo test --lib
 # Run only integration tests
 cargo test --test integration
 
-# Run the end-to-end demo
+# Run the end-to-end demo (ES256 + RS256 registration / auth / replay)
 cargo run --example demo
+
+# Run the Axum HTTP server on port 3000
+cargo run --example server
 
 # Clippy (zero-warning policy)
 cargo clippy -- -D warnings
@@ -184,8 +188,11 @@ cargo fmt
 # Check formatting without modifying files
 cargo fmt --check
 
-# Generate and open documentation
-cargo doc --open
+# Generate API documentation (zero warnings expected)
+cargo doc --no-deps
+
+# Check crates.io packaging readiness
+cargo package --no-verify --allow-dirty
 ```
 
 ---
@@ -258,9 +265,9 @@ Canonical spec: https://www.w3.org/TR/webauthn-3/
 
 | Limitation | Notes |
 |------------|-------|
-| RS256 (RSA) verification | `PublicKey::RS256` variant exists; signature check not implemented |
 | EdDSA / Ed25519 | Not supported; would require `ring` Ed25519 verify path |
-| Only `"none"` attestation | `"packed"`, `"tpm"`, `"android-key"` formats not implemented |
+| Packed basic attestation cert chain | `x5c` detected, `AttestationType::Basic` returned; chain not verified (no MDS) |
+| `"tpm"` / `"android-key"` attestation | Not implemented |
 | Extension data ignored | The extensions section of authenticator data is parsed but silently skipped |
 | `crossOrigin: true` accepted | Some RPs should reject cross-origin requests; currently allowed |
 | Challenge single-use enforcement | The caller is responsible — the library does not maintain a used-challenge set |
@@ -447,3 +454,78 @@ The sign-count check in `authentication.rs` was updated: the old check
 regardless of the stored count. The new check (`(stored > 0 || received > 0)
 && received <= stored`) rejects received=0 when stored>0, catching the
 wrap-around (u32::MAX → 0) case as a `SignCountInvalid` error.
+
+---
+
+## Phase 5 — Stretch Goals (Project complete)
+
+Phase 5 (implemented June 2026) elevated the library from a solid implementation
+to a portfolio-ready, publishable crate.
+
+### `#![forbid(unsafe_code)]`
+
+Added to `src/lib.rs` as the first crate-level attribute. This is a strong signal
+for a security library: it eliminates entire classes of memory safety vulnerabilities
+at compile time and signals to reviewers that no unsafe code exists anywhere in this
+crate. All security-critical operations remain inside `ring`'s audited boundary.
+
+### Packed attestation verification
+
+`src/attestation.rs` now implements W3C WebAuthn §8.2 for the `"packed"` format:
+
+- **Self-attestation** (`x5c` absent): `alg` verified to match the credential key
+  algorithm, `authData || clientDataHash` verified using `verify_es256` or
+  `verify_rs256`. Returns `AttestationType::SelfAttestation`.
+- **Basic attestation** (`x5c` present): detected and returns `AttestationType::Basic`.
+  Certificate chain is not verified — no FIDO MDS trust anchor set available.
+- Other formats (`"fido-u2f"`, `"tpm"`, etc.): accepted with `AttestationType::None`
+  (provenance unverifiable but credential usable).
+
+`parse_attestation_object` in `registration.rs` was updated to return the `attStmt`
+CBOR value alongside `fmt` and `authData`. The `attestation::verify` signature was
+extended to accept `att_stmt`, `auth_data_bytes`, `client_data_hash`, and
+`credential_public_key`.
+
+`AttestationType::Basic` variant was added to `credential.rs`.
+
+### Axum HTTP server example (`examples/server.rs`)
+
+A real Axum 0.7 HTTP server that exercises the full WebAuthn library API:
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET  /health` | Version check |
+| `POST /register/begin` | Issue registration challenge |
+| `POST /register/complete` | Verify attestation, store credential |
+| `POST /authenticate/begin` | Issue authentication challenge |
+| `POST /authenticate/complete` | Verify assertion, update sign count |
+
+State is in-memory (`tokio::sync::Mutex<HashMap<…>>`). `axum`, `tokio`, and `tower`
+added as dev-dependencies.
+
+### crates.io preparation
+
+- Package name changed to `webauthn-rs-demo` (the `webauthn` name is taken);
+  `[lib] name = "webauthn"` keeps the Rust import path unchanged for all existing code.
+- `Cargo.toml` updated with `description`, `keywords`, `categories`, `repository`,
+  `documentation`, `license = "MIT OR Apache-2.0"`, `rust-version = "1.70"`.
+- `LICENSE-MIT` and `LICENSE-APACHE` added.
+- `CHANGELOG.md` added.
+- `cargo package --no-verify --allow-dirty` produces zero warnings (46 files, ~89 KiB).
+
+### cargo doc polish
+
+- `src/lib.rs` crate-level doc comment updated: complete quick-start example
+  (registration + authentication), algorithm table, security properties summary,
+  learning-project disclaimer, spec references.
+- `src/attestation.rs` doc comment updated to reflect `"packed"` support.
+- Two bare URLs in module doc comments wrapped as `<URL>` to eliminate the two
+  `rustdoc::bare_urls` warnings. `cargo doc --no-deps` now produces zero warnings.
+
+### How to prepare a release
+
+1. Update `version` in `Cargo.toml` and `CHANGELOG.md`.
+2. Run the quality suite: `cargo build && cargo clippy -- -D warnings && cargo test && cargo fmt --check && cargo doc --no-deps`.
+3. `cargo package --no-verify` to verify the .crate file.
+4. `git tag v<version> && git push --tags`.
+5. `cargo publish` (requires `cargo login` with crates.io token first).
