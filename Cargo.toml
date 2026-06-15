@@ -28,6 +28,10 @@ thiserror = "1"
 [dev-dependencies]
 # Ergonomic error handling for the demo binary and integration tests
 anyhow = "1"
+# HTTP server for the server example
+axum = "0.7"
+tokio = { version = "1", features = ["full"] }
+tower = "0.4"
 
 [[example]]
 name = "demo"
@@ -36,3 +40,8 @@ path = "examples/demo.rs"
 [[example]]
 name = "generate_vectors"
 path = "examples/generate_vectors.rs"
+
+[[example]]
+name = "server"
+path = "examples/server.rs"
+required-features = []
