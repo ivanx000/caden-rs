@@ -7,7 +7,7 @@
 //! 2. The authenticator data is bound to *this* RP ID.
 //! 3. The public key is valid and can be stored for future authentication.
 //!
-//! Spec: https://www.w3.org/TR/webauthn-2/#sctn-registering-a-new-credential
+//! Spec: <https://www.w3.org/TR/webauthn-2/#sctn-registering-a-new-credential>
 
 use ciborium::value::Value;
 use std::time::SystemTime;
@@ -139,7 +139,7 @@ fn verify_registration_inner(
 
     // ── §7.1 step 12 ──────────────────────────────────────────────────────────
     // Perform CBOR decoding on the attestationObject.
-    let (fmt, auth_data_bytes) = parse_attestation_object(&response.attestation_object)?;
+    let (fmt, auth_data_bytes, att_stmt) = parse_attestation_object(&response.attestation_object)?;
 
     // ── §7.1 step 9 (authData) ────────────────────────────────────────────────
     // Parse the raw authenticator data bytes into a typed structure.
@@ -180,8 +180,15 @@ fn verify_registration_inner(
     };
 
     // ── §7.1 step 19 ──────────────────────────────────────────────────────────
-    // Verify the attestation statement.
-    let attestation_type = attestation::verify(&fmt, &auth_data.raw, &client_data_hash)?;
+    // Verify the attestation statement. Pass the public key so packed
+    // self-attestation can verify the signature with the credential key.
+    let attestation_type = attestation::verify(
+        &fmt,
+        &att_stmt,
+        &auth_data_bytes,
+        &client_data_hash,
+        &public_key,
+    )?;
 
     // ── §7.1 step 25 ──────────────────────────────────────────────────────────
     // Build the Credential. The caller must persist this object.
@@ -202,13 +209,13 @@ fn verify_registration_inner(
 
 // ─── CBOR attestation object ──────────────────────────────────────────────────
 
-/// Decode the CBOR attestation object and return `(fmt, authData bytes)`.
+/// Decode the CBOR attestation object and return `(fmt, authData bytes, attStmt)`.
 ///
 /// The attestation object is a CBOR map with at least:
 /// - `"fmt"`      (text): attestation format
-/// - `"attStmt"`  (map):  attestation statement (handled by `attestation::verify`)
+/// - `"attStmt"`  (map):  attestation statement (forwarded to `attestation::verify`)
 /// - `"authData"` (bytes): raw authenticator data
-fn parse_attestation_object(data: &[u8]) -> Result<(String, Vec<u8>)> {
+fn parse_attestation_object(data: &[u8]) -> Result<(String, Vec<u8>, Value)> {
     let value: Value = ciborium::from_reader(data)
         .map_err(|e| WebAuthnError::CborDecodeError(format!("attestation object: {e}")))?;
 
@@ -223,7 +230,7 @@ fn parse_attestation_object(data: &[u8]) -> Result<(String, Vec<u8>)> {
 
     let mut fmt: Option<String> = None;
     let mut auth_data: Option<Result<Vec<u8>>> = None;
-    let mut has_att_stmt = false;
+    let mut att_stmt: Option<Value> = None;
 
     for (k, v) in map {
         match k {
@@ -241,7 +248,7 @@ fn parse_attestation_object(data: &[u8]) -> Result<(String, Vec<u8>)> {
                 });
             }
             Value::Text(ref key) if key == "attStmt" => {
-                has_att_stmt = true;
+                att_stmt = Some(v);
             }
             _ => {}
         }
@@ -255,13 +262,11 @@ fn parse_attestation_object(data: &[u8]) -> Result<(String, Vec<u8>)> {
         WebAuthnError::InvalidAttestationObject("missing required field: authData".to_string())
     })??; // first ? unwraps Option, second ? propagates the inner Result
 
-    if !has_att_stmt {
-        return Err(WebAuthnError::InvalidAttestationObject(
-            "missing required field: attStmt".to_string(),
-        ));
-    }
+    let att_stmt = att_stmt.ok_or_else(|| {
+        WebAuthnError::InvalidAttestationObject("missing required field: attStmt".to_string())
+    })?;
 
-    Ok((fmt, auth_data))
+    Ok((fmt, auth_data, att_stmt))
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────

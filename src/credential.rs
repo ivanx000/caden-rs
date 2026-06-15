@@ -186,4 +186,10 @@ pub enum AttestationType {
     /// The attestation was signed by the same key used for authentication
     /// (self-attestation). Proves the credential is fresh but not the device model.
     SelfAttestation,
+
+    /// The attestation was signed by a separate attestation key with an `x5c`
+    /// certificate chain present. The certificate chain is **not** verified by
+    /// this library (no trust-anchor set or FIDO MDS integration). The credential
+    /// is accepted, but device provenance is unverified.
+    Basic,
 }
