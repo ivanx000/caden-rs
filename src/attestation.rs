@@ -26,9 +26,9 @@
 
 use ciborium::value::Value;
 
-use crate::algorithm::{COSE_ES256, COSE_RS256};
+use crate::algorithm::{COSE_EDDSA, COSE_ES256, COSE_RS256};
 use crate::credential::{AttestationType, PublicKey};
-use crate::crypto::{verify_es256, verify_rs256};
+use crate::crypto::{verify_eddsa, verify_es256, verify_rs256};
 use crate::der::rsa_components_to_der;
 use crate::error::{Result, WebAuthnError};
 
@@ -171,6 +171,9 @@ fn verify_packed(
             uncompressed.extend_from_slice(x);
             uncompressed.extend_from_slice(y);
             verify_es256(&uncompressed, &verification_data, &sig)?;
+        }
+        PublicKey::EdDSA(pk) if alg == COSE_EDDSA => {
+            verify_eddsa(pk, &verification_data, &sig)?;
         }
         PublicKey::RS256 { n, e } if alg == COSE_RS256 => {
             let der = rsa_components_to_der(n, e)?;

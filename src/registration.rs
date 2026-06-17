@@ -12,7 +12,7 @@
 use ciborium::value::Value;
 use std::time::SystemTime;
 
-use crate::algorithm::COSE_ES256;
+use crate::algorithm::{COSE_EDDSA, COSE_ES256};
 use crate::attestation;
 use crate::authenticator_data::{self, CoseKey};
 use crate::challenge::CHALLENGE_MAX_AGE_SECS;
@@ -176,6 +176,8 @@ fn verify_registration_inner(
     let public_key = match cred_data.public_key {
         CoseKey::EC2 { alg, x, y, .. } if alg == COSE_ES256 => PublicKey::ES256 { x, y },
         CoseKey::EC2 { alg, .. } => return Err(WebAuthnError::UnsupportedAlgorithm(alg)),
+        CoseKey::OKP { alg, x, .. } if alg == COSE_EDDSA => PublicKey::EdDSA(x),
+        CoseKey::OKP { alg, .. } => return Err(WebAuthnError::UnsupportedAlgorithm(alg)),
         CoseKey::RSA { n, e, .. } => PublicKey::RS256 { n, e },
     };
 

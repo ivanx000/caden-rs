@@ -14,7 +14,7 @@ use crate::authenticator_data;
 use crate::challenge::CHALLENGE_MAX_AGE_SECS;
 use crate::client_data;
 use crate::credential::{AuthenticationResult, Challenge, Credential, PublicKey};
-use crate::crypto::{rsa_components_to_der, sha256, verify_es256, verify_rs256};
+use crate::crypto::{rsa_components_to_der, sha256, verify_eddsa, verify_es256, verify_rs256};
 use crate::error::{Result, WebAuthnError};
 use crate::registration::RelyingParty;
 
@@ -129,6 +129,10 @@ fn verify_authentication_inner(
             pk.extend_from_slice(x);
             pk.extend_from_slice(y);
             verify_es256(&pk, &signed_data, &response.signature)?;
+        }
+        PublicKey::EdDSA(pk) => {
+            // Ed25519 signature is raw 64 bytes; ring processes the message directly.
+            verify_eddsa(pk, &signed_data, &response.signature)?;
         }
         PublicKey::RS256 { n, e } => {
             let der = rsa_components_to_der(n, e)?;
