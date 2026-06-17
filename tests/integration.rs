@@ -1374,7 +1374,7 @@ impl EdDsaFixture {
 
 fn encode_eddsa_cose_key(public_key: &[u8]) -> Vec<u8> {
     let cose = Value::Map(vec![
-        (Value::Integer(1i64.into()), Value::Integer(1i64.into())),    // kty: OKP
+        (Value::Integer(1i64.into()), Value::Integer(1i64.into())), // kty: OKP
         (Value::Integer(3i64.into()), Value::Integer((-8i64).into())), // alg: EdDSA
         (Value::Integer((-1i64).into()), Value::Integer(6i64.into())), // crv: Ed25519
         (
@@ -1394,8 +1394,7 @@ fn eddsa_full_registration_and_authentication_flow() {
 
     // Registration
     let reg_challenge = Challenge::new().unwrap();
-    let response =
-        fixture.make_registration_response(&reg_challenge.bytes, ORIGIN, RP_ID, 0x41, 0);
+    let response = fixture.make_registration_response(&reg_challenge.bytes, ORIGIN, RP_ID, 0x41, 0);
     let reg_result = rp
         .verify_registration(&reg_challenge, &response, b"eddsa-user")
         .expect("EdDSA registration should succeed");
@@ -1427,8 +1426,7 @@ fn eddsa_rejects_tampered_signature() {
     let fixture = EdDsaFixture::new();
 
     let reg_challenge = Challenge::new().unwrap();
-    let response =
-        fixture.make_registration_response(&reg_challenge.bytes, ORIGIN, RP_ID, 0x41, 0);
+    let response = fixture.make_registration_response(&reg_challenge.bytes, ORIGIN, RP_ID, 0x41, 0);
     let credential = rp
         .verify_registration(&reg_challenge, &response, b"uid")
         .unwrap()
@@ -1450,8 +1448,7 @@ fn eddsa_rejects_replay_attack() {
     let fixture = EdDsaFixture::new();
 
     let reg_challenge = Challenge::new().unwrap();
-    let response =
-        fixture.make_registration_response(&reg_challenge.bytes, ORIGIN, RP_ID, 0x41, 0);
+    let response = fixture.make_registration_response(&reg_challenge.bytes, ORIGIN, RP_ID, 0x41, 0);
     let mut credential = rp
         .verify_registration(&reg_challenge, &response, b"uid")
         .unwrap()
@@ -1484,8 +1481,7 @@ fn eddsa_rejects_signature_over_wrong_message() {
     let fixture = EdDsaFixture::new();
 
     let reg_challenge = Challenge::new().unwrap();
-    let response =
-        fixture.make_registration_response(&reg_challenge.bytes, ORIGIN, RP_ID, 0x41, 0);
+    let response = fixture.make_registration_response(&reg_challenge.bytes, ORIGIN, RP_ID, 0x41, 0);
     let credential = rp
         .verify_registration(&reg_challenge, &response, b"uid")
         .unwrap()
