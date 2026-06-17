@@ -10,8 +10,9 @@ use crate::error::{Result, WebAuthnError};
 
 /// The public key extracted from a COSE key structure during registration.
 ///
-/// Two algorithms are supported:
+/// Three algorithms are supported:
 /// - **ES256** — ECDSA P-256 with SHA-256 (COSE alg `-7`). Most common.
+/// - **EdDSA** — Ed25519 (COSE alg `-8`). Used by newer FIDO2 authenticators.
 /// - **RS256** — RSA PKCS#1 v1.5 with SHA-256 (COSE alg `-257`). Used by
 ///   older YubiKey 4-series devices and Windows Hello.
 #[derive(Debug, Clone)]
@@ -22,6 +23,12 @@ pub enum PublicKey {
     /// To obtain the 65-byte uncompressed point for ring, prepend `0x04`:
     /// `0x04 || x (32 bytes) || y (32 bytes)`.
     ES256 { x: Vec<u8>, y: Vec<u8> },
+
+    /// Ed25519 EdDSA public key (COSE alg `-8`, kty `1` OKP).
+    ///
+    /// The inner `Vec<u8>` is the raw 32-byte Ed25519 public key,
+    /// as encoded in COSE OKP key parameter `-2` (`x`).
+    EdDSA(Vec<u8>),
 
     /// RSA PKCS#1 v1.5 SHA-256 public key (COSE alg `-257`, kty `3`).
     ///
@@ -35,6 +42,7 @@ impl PublicKey {
     pub fn algorithm(&self) -> i64 {
         match self {
             PublicKey::ES256 { .. } => crate::algorithm::COSE_ES256,
+            PublicKey::EdDSA(_) => crate::algorithm::COSE_EDDSA,
             PublicKey::RS256 { .. } => crate::algorithm::COSE_RS256,
         }
     }
@@ -43,6 +51,7 @@ impl PublicKey {
     pub fn key_type(&self) -> &'static str {
         match self {
             PublicKey::ES256 { .. } => "EC2 P-256",
+            PublicKey::EdDSA(_) => "OKP Ed25519",
             PublicKey::RS256 { .. } => "RSA 2048",
         }
     }

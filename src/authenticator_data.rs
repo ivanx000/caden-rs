@@ -23,7 +23,10 @@
 
 use ciborium::value::Value;
 
-use crate::algorithm::{COSE_CRV_P256, COSE_KTY_EC2, COSE_KTY_RSA, COSE_RS256};
+use crate::algorithm::{
+    COSE_CRV_ED25519, COSE_CRV_P256, COSE_EDDSA, COSE_KTY_EC2, COSE_KTY_OKP, COSE_KTY_RSA,
+    COSE_RS256,
+};
 use crate::error::{Result, WebAuthnError};
 
 // ─── Flags bitmask constants ──────────────────────────────────────────────────
@@ -60,8 +63,9 @@ pub struct AuthenticatorFlags {
 
 /// A decoded COSE_Key from the credential's authenticator data.
 ///
-/// Two key types are supported:
+/// Three key types are supported:
 /// - `EC2`: elliptic-curve (kty = 2). Carries `crv`, `x`, and `y`.
+/// - `OKP`: octet key pair (kty = 1). Carries the raw 32-byte Ed25519 key in `x`.
 /// - `RSA`: RSA public key (kty = 3). Carries `n` and `e`.
 ///
 /// The `alg` field in each variant holds the COSE algorithm identifier;
@@ -79,6 +83,13 @@ pub enum CoseKey {
         /// Y coordinate (COSE map key `-3`). 32 bytes for P-256.
         y: Vec<u8>,
     },
+    /// OKP key — EdDSA with Ed25519 (alg = -8, crv = 6).
+    OKP {
+        /// Algorithm (COSE map key `3`). Value `-8` = EdDSA.
+        alg: i64,
+        /// Raw 32-byte Ed25519 public key (COSE map key `-2`).
+        x: Vec<u8>,
+    },
     /// RSA key — RS256 (alg = -257).
     RSA {
         /// Algorithm (COSE map key `3`). Value `-257` = RS256.
@@ -95,6 +106,7 @@ impl CoseKey {
     pub fn alg(&self) -> i64 {
         match self {
             CoseKey::EC2 { alg, .. } => *alg,
+            CoseKey::OKP { alg, .. } => *alg,
             CoseKey::RSA { alg, .. } => *alg,
         }
     }
@@ -260,18 +272,58 @@ pub fn parse_cose_key(data: &[u8]) -> Result<CoseKey> {
         WebAuthnError::InvalidPublicKey("missing required field: kty".to_string())
     })?;
 
-    if kty == COSE_KTY_EC2 {
+    if kty == COSE_KTY_OKP {
+        parse_okp_key(&get_int, &get_bytes)
+    } else if kty == COSE_KTY_EC2 {
         parse_ec2_key(&get_int, &get_bytes)
     } else if kty == COSE_KTY_RSA {
         parse_rsa_key(&get_int, &get_bytes)
     } else {
         Err(WebAuthnError::InvalidPublicKey(format!(
-            "unsupported key type: {kty} (supported: EC2=2, RSA=3)"
+            "unsupported key type: {kty} (supported: OKP=1, EC2=2, RSA=3)"
         )))
     }
 }
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
+
+fn parse_okp_key(
+    get_int: &impl Fn(i64) -> Option<i64>,
+    get_bytes: &impl Fn(i64) -> Option<Vec<u8>>,
+) -> Result<CoseKey> {
+    // COSE map key 3 = alg. For OKP keys we require EdDSA = -8.
+    let alg = get_int(3).ok_or_else(|| {
+        WebAuthnError::InvalidPublicKey("missing required field: alg".to_string())
+    })?;
+
+    if alg != COSE_EDDSA {
+        return Err(WebAuthnError::UnsupportedAlgorithm(alg));
+    }
+
+    // COSE map key -1 = crv. Value 6 = Ed25519.
+    let crv = get_int(-1).ok_or_else(|| {
+        WebAuthnError::InvalidPublicKey("missing required field: crv".to_string())
+    })?;
+
+    if crv != COSE_CRV_ED25519 {
+        return Err(WebAuthnError::InvalidPublicKey(format!(
+            "unsupported OKP curve: {crv} (only Ed25519 / crv=6 is supported)"
+        )));
+    }
+
+    // COSE map key -2 = x (raw public key bytes). Ed25519 keys are always 32 bytes.
+    let x = get_bytes(-2)
+        .ok_or_else(|| WebAuthnError::InvalidPublicKey("missing required field: x".to_string()))?;
+
+    if x.len() != 32 {
+        return Err(WebAuthnError::InvalidPublicKey(format!(
+            "Ed25519 public key must be 32 bytes, got {}",
+            x.len()
+        )));
+    }
+
+    Ok(CoseKey::OKP { alg, x })
+}
 
 fn parse_ec2_key(
     get_int: &impl Fn(i64) -> Option<i64>,
