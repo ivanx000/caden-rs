@@ -8,11 +8,12 @@
 //!
 //! | Format       | Status                                  | Notes                                                |
 //! |--------------|-----------------------------------------|------------------------------------------------------|
-//! | `"none"`     | ✅ Supported                            | No cryptographic attestation provided                |
-//! | `"packed"`   | ✅ Self-attestation; ⚠️ Basic detected  | Self: signature verified. Basic: cert chain skipped  |
-//! | `"fido-u2f"` | ✅ Supported                            | Signature verified; cert chain requires FIDO MDS     |
-//! | `"tpm"`      | ❌ Not supported                        | Requires TPM certificate chain                       |
-//! | `"apple"`    | ❌ Not supported                        | Requires Apple's root certificate                    |
+//! | `"none"`          | ✅ Supported                            | No cryptographic attestation provided                    |
+//! | `"packed"`        | ✅ Self-attestation; ⚠️ Basic detected  | Self: signature verified. Basic: cert chain skipped      |
+//! | `"fido-u2f"`      | ✅ Supported                            | Signature verified; cert chain requires FIDO MDS         |
+//! | `"android-key"`   | ✅ Supported                            | Signature + key-match verified; cert chain skipped       |
+//! | `"tpm"`           | ❌ Not supported                        | Requires TPM certificate chain                           |
+//! | `"apple"`         | ❌ Not supported                        | Requires Apple's root certificate                        |
 //!
 //! ### Packed attestation sub-cases
 //!
@@ -78,8 +79,16 @@ pub fn verify(
             credential_public_key,
         ),
 
-        // All other formats (tpm, android-key, apple) require certificate
-        // chain validation against the FIDO Metadata Service — out of scope.
+        // §8.4 — android-key attestation: Android Keystore-backed authenticators.
+        "android-key" => verify_android_key(
+            att_stmt,
+            auth_data_bytes,
+            client_data_hash,
+            credential_public_key,
+        ),
+
+        // All other formats (tpm, apple) require certificate chain validation
+        // against the FIDO Metadata Service — out of scope.
         // Accept the credential but signal that attestation was not verified.
         _other => Ok(AttestationType::None),
     }
@@ -315,6 +324,143 @@ fn verify_fido_u2f(
     Ok(AttestationType::Basic)
 }
 
+/// Verify an Android Key attestation statement (W3C WebAuthn §8.4).
+///
+/// Requires `alg`, `sig`, and `x5c` in the attStmt. The attestation cert's
+/// public key must equal the credential's public key (the key security property
+/// of Android Key attestation: the Android Keystore proves the credential key
+/// was generated inside a hardware-backed secure element). Verifies the
+/// ECDSA-P256 signature over `authData || clientDataHash`; returns
+/// [`AttestationType::Basic`] on success. The certificate chain is not verified
+/// — that requires a FIDO MDS trust anchor set.
+fn verify_android_key(
+    att_stmt: &Value,
+    auth_data_bytes: &[u8],
+    client_data_hash: &[u8; 32],
+    credential_public_key: &PublicKey,
+) -> Result<AttestationType> {
+    let stmt_map = match att_stmt {
+        Value::Map(m) => m,
+        _ => {
+            return Err(WebAuthnError::InvalidAttestationObject(
+                "android-key attStmt must be a CBOR map".to_string(),
+            ))
+        }
+    };
+
+    let mut alg: Option<i64> = None;
+    let mut sig: Option<Vec<u8>> = None;
+    let mut x5c_first_cert: Option<Vec<u8>> = None;
+
+    for (k, v) in stmt_map {
+        match k {
+            Value::Text(ref key) if key == "alg" => {
+                alg = Some(match v {
+                    Value::Integer(i) => i64::try_from(*i).map_err(|_| {
+                        WebAuthnError::InvalidAttestationObject(
+                            "android-key attStmt alg value out of i64 range".to_string(),
+                        )
+                    })?,
+                    _ => {
+                        return Err(WebAuthnError::InvalidAttestationObject(
+                            "android-key attStmt alg must be a CBOR integer".to_string(),
+                        ))
+                    }
+                });
+            }
+            Value::Text(ref key) if key == "sig" => {
+                sig = Some(match v {
+                    Value::Bytes(b) => b.clone(),
+                    _ => {
+                        return Err(WebAuthnError::InvalidAttestationObject(
+                            "android-key attStmt sig must be CBOR bytes".to_string(),
+                        ))
+                    }
+                });
+            }
+            Value::Text(ref key) if key == "x5c" => {
+                x5c_first_cert = Some(match v {
+                    Value::Array(certs) if !certs.is_empty() => match &certs[0] {
+                        Value::Bytes(b) => b.clone(),
+                        _ => {
+                            return Err(WebAuthnError::InvalidAttestationObject(
+                                "android-key x5c[0] must be CBOR bytes".to_string(),
+                            ))
+                        }
+                    },
+                    Value::Array(_) => {
+                        return Err(WebAuthnError::InvalidAttestationObject(
+                            "android-key x5c must be non-empty".to_string(),
+                        ))
+                    }
+                    _ => {
+                        return Err(WebAuthnError::InvalidAttestationObject(
+                            "android-key x5c must be a CBOR array".to_string(),
+                        ))
+                    }
+                });
+            }
+            _ => {}
+        }
+    }
+
+    // §8.4 step 1: all three fields are required.
+    alg.ok_or_else(|| {
+        WebAuthnError::InvalidAttestationObject(
+            "android-key attStmt missing required field: alg".to_string(),
+        )
+    })?;
+    let sig = sig.ok_or_else(|| {
+        WebAuthnError::InvalidAttestationObject(
+            "android-key attStmt missing required field: sig".to_string(),
+        )
+    })?;
+    let cert_der = x5c_first_cert.ok_or_else(|| {
+        WebAuthnError::InvalidAttestationObject(
+            "android-key attStmt missing required field: x5c".to_string(),
+        )
+    })?;
+
+    // §8.4 step 2: extract the EC P-256 public key from the attestation certificate.
+    let att_pk = extract_ec_p256_public_key_from_cert(&cert_der)?;
+
+    // §8.4 step 3: the credential public key must be ES256 and must match the
+    // attestation certificate's public key byte-for-byte. This is the defining
+    // security property of Android Key attestation — the Keystore proves the
+    // credential key lives in a hardware-backed secure element.
+    let cred_pk_uncompressed = match credential_public_key {
+        PublicKey::ES256 { x, y } => {
+            let mut pk = Vec::with_capacity(65);
+            pk.push(0x04);
+            pk.extend_from_slice(x);
+            pk.extend_from_slice(y);
+            pk
+        }
+        _ => {
+            return Err(WebAuthnError::InvalidAttestationObject(
+                "android-key: attestation requires an ES256 (P-256) credential key".to_string(),
+            ))
+        }
+    };
+
+    if att_pk != cred_pk_uncompressed {
+        return Err(WebAuthnError::InvalidAttestationObject(
+            "android-key: credential public key does not match attestation certificate key"
+                .to_string(),
+        ));
+    }
+
+    // §8.4 step 4: build the verification data: authData || clientDataHash.
+    let mut verification_data = Vec::with_capacity(auth_data_bytes.len() + 32);
+    verification_data.extend_from_slice(auth_data_bytes);
+    verification_data.extend_from_slice(client_data_hash);
+
+    // §8.4 step 5: verify the ECDSA-P256 signature over verification_data.
+    verify_es256(&att_pk, &verification_data, &sig)?;
+
+    Ok(AttestationType::Basic)
+}
+
 /// Extract the 65-byte uncompressed EC P-256 public key (`0x04 || x || y`) from
 /// a DER-encoded X.509 certificate by locating the SubjectPublicKeyInfo structure.
 ///
@@ -369,7 +515,7 @@ mod tests {
 
     #[test]
     fn accepts_unknown_format_as_none() {
-        // Unsupported formats (tpm, android-key, apple) are accepted but return None.
+        // Unsupported formats (tpm, apple) are accepted but return None.
         let pk = dummy_es256_key();
         let result = verify("tpm", &none_att_stmt(), &[], &[0u8; 32], &pk, &[]);
         assert!(matches!(result, Ok(AttestationType::None)));
@@ -705,6 +851,215 @@ mod tests {
             result,
             Err(WebAuthnError::SignatureVerificationFailed)
         ));
+    }
+
+    // ── android-key tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn android_key_valid_signature_returns_basic() {
+        use ring::rand::SystemRandom;
+        use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_ASN1_SIGNING};
+
+        let rng = SystemRandom::new();
+
+        // In android-key, the attestation cert key == the credential key.
+        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng).unwrap();
+        let kp = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, pkcs8.as_ref(), &rng)
+            .unwrap();
+        let pub_bytes = kp.public_key().as_ref(); // 65 bytes: 0x04 || x || y
+        let cert = make_fake_p256_cert(pub_bytes);
+
+        let credential_public_key = PublicKey::ES256 {
+            x: pub_bytes[1..33].to_vec(),
+            y: pub_bytes[33..65].to_vec(),
+        };
+
+        let auth_data = b"fake-auth-data";
+        let client_data_hash = [0xABu8; 32];
+
+        let mut verification_data = Vec::new();
+        verification_data.extend_from_slice(auth_data);
+        verification_data.extend_from_slice(&client_data_hash);
+
+        let sig = kp.sign(&rng, &verification_data).unwrap();
+
+        let stmt = Value::Map(vec![
+            (
+                Value::Text("alg".to_string()),
+                Value::Integer((-7i64).into()),
+            ),
+            (
+                Value::Text("sig".to_string()),
+                Value::Bytes(sig.as_ref().to_vec()),
+            ),
+            (
+                Value::Text("x5c".to_string()),
+                Value::Array(vec![Value::Bytes(cert)]),
+            ),
+        ]);
+
+        let result = verify(
+            "android-key",
+            &stmt,
+            auth_data,
+            &client_data_hash,
+            &credential_public_key,
+            &[],
+        );
+        assert!(matches!(result, Ok(AttestationType::Basic)));
+    }
+
+    #[test]
+    fn android_key_bad_signature_rejected() {
+        use ring::rand::SystemRandom;
+        use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_ASN1_SIGNING};
+
+        let rng = SystemRandom::new();
+        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng).unwrap();
+        let kp = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, pkcs8.as_ref(), &rng)
+            .unwrap();
+        let pub_bytes = kp.public_key().as_ref();
+        let cert = make_fake_p256_cert(pub_bytes);
+
+        let credential_public_key = PublicKey::ES256 {
+            x: pub_bytes[1..33].to_vec(),
+            y: pub_bytes[33..65].to_vec(),
+        };
+
+        let stmt = Value::Map(vec![
+            (
+                Value::Text("alg".to_string()),
+                Value::Integer((-7i64).into()),
+            ),
+            (
+                Value::Text("sig".to_string()),
+                Value::Bytes(vec![0xDE, 0xAD, 0xBE, 0xEF]), // garbage
+            ),
+            (
+                Value::Text("x5c".to_string()),
+                Value::Array(vec![Value::Bytes(cert)]),
+            ),
+        ]);
+
+        let result = verify(
+            "android-key",
+            &stmt,
+            b"auth-data",
+            &[0u8; 32],
+            &credential_public_key,
+            &[],
+        );
+        assert!(matches!(
+            result,
+            Err(WebAuthnError::SignatureVerificationFailed)
+        ));
+    }
+
+    #[test]
+    fn android_key_rejects_missing_x5c() {
+        let pk = dummy_es256_key();
+        let stmt = Value::Map(vec![
+            (
+                Value::Text("alg".to_string()),
+                Value::Integer((-7i64).into()),
+            ),
+            (Value::Text("sig".to_string()), Value::Bytes(vec![0u8; 64])),
+        ]);
+        let result = verify("android-key", &stmt, &[], &[0u8; 32], &pk, &[]);
+        assert!(
+            matches!(result, Err(WebAuthnError::InvalidAttestationObject(ref m)) if m.contains("x5c"))
+        );
+    }
+
+    #[test]
+    fn android_key_rejects_missing_sig() {
+        let pk = dummy_es256_key();
+        let stmt = Value::Map(vec![
+            (
+                Value::Text("alg".to_string()),
+                Value::Integer((-7i64).into()),
+            ),
+            (
+                Value::Text("x5c".to_string()),
+                Value::Array(vec![Value::Bytes(make_fake_p256_cert(&[0x04; 65]))]),
+            ),
+        ]);
+        let result = verify("android-key", &stmt, &[], &[0u8; 32], &pk, &[]);
+        assert!(
+            matches!(result, Err(WebAuthnError::InvalidAttestationObject(ref m)) if m.contains("sig"))
+        );
+    }
+
+    #[test]
+    fn android_key_rejects_key_mismatch() {
+        use ring::rand::SystemRandom;
+        use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_ASN1_SIGNING};
+
+        let rng = SystemRandom::new();
+
+        // Cert key and credential key are two different keypairs — mismatch.
+        let cert_pkcs8 =
+            EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng).unwrap();
+        let cert_kp =
+            EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, cert_pkcs8.as_ref(), &rng)
+                .unwrap();
+        let cert = make_fake_p256_cert(cert_kp.public_key().as_ref());
+
+        let cred_pkcs8 =
+            EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng).unwrap();
+        let cred_kp =
+            EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, cred_pkcs8.as_ref(), &rng)
+                .unwrap();
+        let cred_pub = cred_kp.public_key().as_ref();
+        let credential_public_key = PublicKey::ES256 {
+            x: cred_pub[1..33].to_vec(),
+            y: cred_pub[33..65].to_vec(),
+        };
+
+        let stmt = Value::Map(vec![
+            (
+                Value::Text("alg".to_string()),
+                Value::Integer((-7i64).into()),
+            ),
+            (Value::Text("sig".to_string()), Value::Bytes(vec![0u8; 64])),
+            (
+                Value::Text("x5c".to_string()),
+                Value::Array(vec![Value::Bytes(cert)]),
+            ),
+        ]);
+
+        let result = verify(
+            "android-key",
+            &stmt,
+            &[],
+            &[0u8; 32],
+            &credential_public_key,
+            &[],
+        );
+        assert!(
+            matches!(result, Err(WebAuthnError::InvalidAttestationObject(ref m)) if m.contains("does not match"))
+        );
+    }
+
+    #[test]
+    fn android_key_rejects_non_es256_credential_key() {
+        // EdDSA credential key — android-key only supports P-256.
+        let pk = PublicKey::EdDSA(vec![0u8; 32]);
+        let stmt = Value::Map(vec![
+            (
+                Value::Text("alg".to_string()),
+                Value::Integer((-7i64).into()),
+            ),
+            (Value::Text("sig".to_string()), Value::Bytes(vec![0u8; 64])),
+            (
+                Value::Text("x5c".to_string()),
+                Value::Array(vec![Value::Bytes(make_fake_p256_cert(&[0x04; 65]))]),
+            ),
+        ]);
+        let result = verify("android-key", &stmt, &[], &[0u8; 32], &pk, &[]);
+        assert!(
+            matches!(result, Err(WebAuthnError::InvalidAttestationObject(ref m)) if m.contains("ES256"))
+        );
     }
 
     // ── helpers ──────────────────────────────────────────────────────────────
