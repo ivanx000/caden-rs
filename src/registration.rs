@@ -184,12 +184,14 @@ fn verify_registration_inner(
     // ── §7.1 step 19 ──────────────────────────────────────────────────────────
     // Verify the attestation statement. Pass the public key so packed
     // self-attestation can verify the signature with the credential key.
+    // Pass credential_id for fido-u2f verificationData construction.
     let attestation_type = attestation::verify(
         &fmt,
         &att_stmt,
         &auth_data_bytes,
         &client_data_hash,
         &public_key,
+        &cred_data.credential_id,
     )?;
 
     // ── §7.1 step 25 ──────────────────────────────────────────────────────────
