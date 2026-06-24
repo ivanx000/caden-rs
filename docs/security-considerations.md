@@ -1,6 +1,6 @@
 # Security Considerations
 
-Detailed security notes for implementers using this WebAuthn library.
+Detailed security notes for implementers using this Caden library.
 
 ---
 

@@ -1,6 +1,6 @@
 # Architecture
 
-How this WebAuthn library is structured and why.
+How this Caden library is structured and why.
 
 ---
 
