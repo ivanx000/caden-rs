@@ -1,6 +1,6 @@
-[![CI](https://github.com/ivanx000/WebAuthn/actions/workflows/ci.yml/badge.svg)](https://github.com/ivanx000/WebAuthn/actions/workflows/ci.yml) ![Rust](https://img.shields.io/badge/rust-1.70%2B-orange) ![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)
+[![CI](https://github.com/ivanx000/caden-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/ivanx000/caden-rs/actions/workflows/ci.yml) ![Rust](https://img.shields.io/badge/rust-1.70%2B-orange) ![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)
 
-# WebAuthn
+# Caden
 
 A WebAuthn relying-party library written in Rust.
 
