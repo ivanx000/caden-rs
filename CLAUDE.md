@@ -1,4 +1,7 @@
-# CLAUDE.md — WebAuthn
+# CLAUDE.md — Caden
+
+> This project was renamed from "WebAuthn" to "Caden" (repo: caden-rs) on 2026-06-24.
+> All references to "WebAuthn" in this codebase refer to the W3C standard, not the project name.
 
 Developer guide for this codebase. Start here every session.
 
@@ -6,7 +9,7 @@ Developer guide for this codebase. Start here every session.
 
 ## Project overview
 
-This is a **WebAuthn relying-party library** written in Rust. It implements
+This is **Caden**, a WebAuthn relying-party library written in Rust. It implements
 the server-side verification logic for the two core WebAuthn ceremonies:
 
 - **Registration** (`navigator.credentials.create`) — the authenticator generates
@@ -352,7 +355,7 @@ automation during AI-assisted development. All hooks are in `.claude/scripts/`.
 
 The auto-commit Stop hook has been disabled. Commits are made explicitly during
 a turn, one per logical change, with specific conventional commit messages. This
-gives a meaningful git history instead of one catch-all "update WebAuthn (N
+gives a meaningful git history instead of one catch-all "update Caden (N
 files changed)" commit per Claude turn.
 
 To push when you're ready: `git push`.
@@ -498,7 +501,7 @@ extended to accept `att_stmt`, `auth_data_bytes`, `client_data_hash`, and
 
 ### Axum HTTP server example (`examples/server.rs`)
 
-A real Axum 0.7 HTTP server that exercises the full WebAuthn library API:
+A real Axum 0.7 HTTP server that exercises the full Caden library API:
 
 | Endpoint | Description |
 |----------|-------------|
