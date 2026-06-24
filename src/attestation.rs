@@ -13,7 +13,7 @@
 //! | `"fido-u2f"`      | ✅ Supported                            | Signature verified; cert chain requires FIDO MDS         |
 //! | `"android-key"`   | ✅ Supported                            | Signature + key-match verified; cert chain skipped       |
 //! | `"tpm"`           | ❌ Not supported                        | Requires TPM certificate chain                           |
-//! | `"apple"`         | ❌ Not supported                        | Requires Apple's root certificate                        |
+//! | `"apple"`         | ✅ Supported                            | Nonce + key-match verified; cert chain requires Apple MDS |
 //!
 //! ### Packed attestation sub-cases
 //!
@@ -87,8 +87,16 @@ pub fn verify(
             credential_public_key,
         ),
 
-        // All other formats (tpm, apple) require certificate chain validation
-        // against the FIDO Metadata Service — out of scope.
+        // §8.8 — apple attestation: Face ID and Touch ID passkeys.
+        "apple" => verify_apple(
+            att_stmt,
+            auth_data_bytes,
+            client_data_hash,
+            credential_public_key,
+        ),
+
+        // All other formats (tpm) require certificate chain validation against
+        // the FIDO Metadata Service — out of scope.
         // Accept the credential but signal that attestation was not verified.
         _other => Ok(AttestationType::None),
     }
@@ -459,6 +467,233 @@ fn verify_android_key(
     verify_es256(&att_pk, &verification_data, &sig)?;
 
     Ok(AttestationType::Basic)
+}
+
+/// Verify an Apple attestation statement (W3C WebAuthn §8.8).
+///
+/// Requires `x5c` in the attStmt. Verifies that:
+/// 1. The credential certificate (x5c[0]) contains an Apple nonce extension
+///    (OID 1.2.840.113635.100.8.2) whose value equals SHA-256(authData || clientDataHash).
+/// 2. The credential certificate's EC P-256 public key equals the registered credential key.
+///
+/// Returns [`AttestationType::Basic`] on success. The certificate chain is not
+/// verified — that requires Apple's root certificate and FIDO MDS integration.
+fn verify_apple(
+    att_stmt: &Value,
+    auth_data_bytes: &[u8],
+    client_data_hash: &[u8; 32],
+    credential_public_key: &PublicKey,
+) -> Result<AttestationType> {
+    let stmt_map = match att_stmt {
+        Value::Map(m) => m,
+        _ => {
+            return Err(WebAuthnError::InvalidAttestationObject(
+                "apple attStmt must be a CBOR map".to_string(),
+            ))
+        }
+    };
+
+    let mut x5c_first_cert: Option<Vec<u8>> = None;
+
+    for (k, v) in stmt_map {
+        if let Value::Text(ref key) = k {
+            if key == "x5c" {
+                x5c_first_cert = Some(match v {
+                    Value::Array(certs) if !certs.is_empty() => match &certs[0] {
+                        Value::Bytes(b) => b.clone(),
+                        _ => {
+                            return Err(WebAuthnError::InvalidAttestationObject(
+                                "apple x5c[0] must be CBOR bytes".to_string(),
+                            ))
+                        }
+                    },
+                    Value::Array(_) => {
+                        return Err(WebAuthnError::InvalidAttestationObject(
+                            "apple x5c must be non-empty".to_string(),
+                        ))
+                    }
+                    _ => {
+                        return Err(WebAuthnError::InvalidAttestationObject(
+                            "apple x5c must be a CBOR array".to_string(),
+                        ))
+                    }
+                });
+            }
+        }
+    }
+
+    // §8.8 step 1: x5c must be present.
+    let cert_der = x5c_first_cert.ok_or_else(|| {
+        WebAuthnError::InvalidAttestationObject(
+            "apple attStmt missing required field: x5c".to_string(),
+        )
+    })?;
+
+    // §8.8 step 2: expected nonce = SHA-256(authData || clientDataHash).
+    let mut nonce_input = Vec::with_capacity(auth_data_bytes.len() + 32);
+    nonce_input.extend_from_slice(auth_data_bytes);
+    nonce_input.extend_from_slice(client_data_hash);
+    let expected_nonce = crate::crypto::sha256(&nonce_input);
+
+    // §8.8 step 3: extract the nonce from the Apple attestation OID extension.
+    let cert_nonce = extract_apple_nonce_from_cert(&cert_der)?;
+
+    // §8.8 step 4: nonce in the cert must equal the expected nonce.
+    if cert_nonce != expected_nonce {
+        return Err(WebAuthnError::InvalidAttestationObject(
+            "apple: certificate nonce does not match SHA-256(authData || clientDataHash)"
+                .to_string(),
+        ));
+    }
+
+    // §8.8 step 5: the cert's public key must equal the registered credential key.
+    // This proves the authenticator holds the private key.
+    let cert_pk = extract_ec_p256_public_key_from_cert(&cert_der)?;
+    let cred_pk_uncompressed = match credential_public_key {
+        PublicKey::ES256 { x, y } => {
+            let mut pk = Vec::with_capacity(65);
+            pk.push(0x04);
+            pk.extend_from_slice(x);
+            pk.extend_from_slice(y);
+            pk
+        }
+        _ => {
+            return Err(WebAuthnError::InvalidAttestationObject(
+                "apple: attestation requires an ES256 (P-256) credential key".to_string(),
+            ))
+        }
+    };
+
+    if cert_pk != cred_pk_uncompressed {
+        return Err(WebAuthnError::InvalidAttestationObject(
+            "apple: credential public key does not match attestation certificate key".to_string(),
+        ));
+    }
+
+    Ok(AttestationType::Basic)
+}
+
+/// Extract the 32-byte nonce from the Apple attestation OID extension
+/// (OID 1.2.840.113635.100.8.2) in a DER-encoded X.509 certificate.
+///
+/// The extension value structure (after the extnValue OCTET STRING wrapper) is:
+/// ```text
+/// SEQUENCE {
+///   SEQUENCE {
+///     OCTET STRING <32 bytes — SHA-256(authData || clientDataHash)>
+///   }
+/// }
+/// ```
+fn extract_apple_nonce_from_cert(cert_der: &[u8]) -> Result<[u8; 32]> {
+    // DER encoding of OID 1.2.840.113635.100.8.2
+    const APPLE_NONCE_OID: &[u8] = &[
+        0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x63, 0x64, 0x08, 0x02,
+    ];
+
+    let oid_pos = cert_der
+        .windows(APPLE_NONCE_OID.len())
+        .position(|w| w == APPLE_NONCE_OID)
+        .ok_or_else(|| {
+            WebAuthnError::InvalidAttestationObject(
+                "apple: credential certificate missing Apple nonce extension \
+                 (OID 1.2.840.113635.100.8.2)"
+                    .to_string(),
+            )
+        })?;
+
+    let after_oid = &cert_der[oid_pos + APPLE_NONCE_OID.len()..];
+
+    // Skip the optional criticality flag (tag 0x01 = BOOLEAN).
+    let ext_value_bytes = if after_oid.first() == Some(&0x01) {
+        // BOOLEAN TLV: 01 01 [value] — always 3 bytes.
+        after_oid.get(3..).unwrap_or(&[])
+    } else {
+        after_oid
+    };
+
+    // Parse extnValue: OCTET STRING wrapping the extension content.
+    let ext_content = der_unwrap_octet_string(ext_value_bytes).ok_or_else(|| {
+        WebAuthnError::InvalidAttestationObject(
+            "apple: failed to parse extension extnValue OCTET STRING".to_string(),
+        )
+    })?;
+
+    // SEQUENCE { SEQUENCE { OCTET STRING <32 bytes> } }
+    let outer_seq = der_unwrap_sequence(ext_content).ok_or_else(|| {
+        WebAuthnError::InvalidAttestationObject(
+            "apple: failed to parse extension value outer SEQUENCE".to_string(),
+        )
+    })?;
+
+    let inner_seq = der_unwrap_sequence(outer_seq).ok_or_else(|| {
+        WebAuthnError::InvalidAttestationObject(
+            "apple: failed to parse extension value inner SEQUENCE".to_string(),
+        )
+    })?;
+
+    let nonce_bytes = der_unwrap_octet_string(inner_seq).ok_or_else(|| {
+        WebAuthnError::InvalidAttestationObject(
+            "apple: failed to parse nonce OCTET STRING in extension".to_string(),
+        )
+    })?;
+
+    if nonce_bytes.len() != 32 {
+        return Err(WebAuthnError::InvalidAttestationObject(format!(
+            "apple: extension nonce must be 32 bytes, got {}",
+            nonce_bytes.len()
+        )));
+    }
+
+    let mut nonce = [0u8; 32];
+    nonce.copy_from_slice(nonce_bytes);
+    Ok(nonce)
+}
+
+/// Parse one DER TLV element. Returns `(tag, value, remaining)` or `None` if
+/// the slice is too short.
+fn der_parse_tlv(data: &[u8]) -> Option<(u8, &[u8], &[u8])> {
+    let tag = *data.first()?;
+    if data.len() < 2 {
+        return None;
+    }
+    let (len, header_len) = if data[1] & 0x80 == 0 {
+        (data[1] as usize, 2)
+    } else {
+        let num_bytes = (data[1] & 0x7f) as usize;
+        if num_bytes == 0 || data.len() < 2 + num_bytes {
+            return None;
+        }
+        let mut len = 0usize;
+        for &b in &data[2..2 + num_bytes] {
+            len = (len << 8) | b as usize;
+        }
+        (len, 2 + num_bytes)
+    };
+    let end = header_len.checked_add(len)?;
+    if data.len() < end {
+        return None;
+    }
+    Some((tag, &data[header_len..end], &data[end..]))
+}
+
+/// Unwrap a DER SEQUENCE (tag `0x30`), returning its contents.
+fn der_unwrap_sequence(data: &[u8]) -> Option<&[u8]> {
+    let (tag, contents, _) = der_parse_tlv(data)?;
+    if tag == 0x30 {
+        Some(contents)
+    } else {
+        None
+    }
+}
+
+/// Unwrap a DER OCTET STRING (tag `0x04`), returning its contents.
+fn der_unwrap_octet_string(data: &[u8]) -> Option<&[u8]> {
+    let (tag, contents, _) = der_parse_tlv(data)?;
+    if tag == 0x04 {
+        Some(contents)
+    } else {
+        None
+    }
 }
 
 /// Extract the 65-byte uncompressed EC P-256 public key (`0x04 || x || y`) from
@@ -1062,6 +1297,164 @@ mod tests {
         );
     }
 
+    // ── apple tests ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn apple_rejects_missing_x5c() {
+        let pk = dummy_es256_key();
+        let stmt = Value::Map(vec![]);
+        let result = verify("apple", &stmt, &[], &[0u8; 32], &pk, &[]);
+        assert!(
+            matches!(result, Err(WebAuthnError::InvalidAttestationObject(ref m)) if m.contains("x5c"))
+        );
+    }
+
+    #[test]
+    fn apple_rejects_empty_x5c() {
+        let pk = dummy_es256_key();
+        let stmt = Value::Map(vec![(Value::Text("x5c".to_string()), Value::Array(vec![]))]);
+        let result = verify("apple", &stmt, &[], &[0u8; 32], &pk, &[]);
+        assert!(
+            matches!(result, Err(WebAuthnError::InvalidAttestationObject(ref m)) if m.contains("non-empty"))
+        );
+    }
+
+    #[test]
+    fn apple_rejects_nonce_mismatch() {
+        use ring::rand::SystemRandom;
+        use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_ASN1_SIGNING};
+
+        let rng = SystemRandom::new();
+        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng).unwrap();
+        let kp = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, pkcs8.as_ref(), &rng)
+            .unwrap();
+        let pub_bytes = kp.public_key().as_ref();
+        let credential_public_key = PublicKey::ES256 {
+            x: pub_bytes[1..33].to_vec(),
+            y: pub_bytes[33..65].to_vec(),
+        };
+
+        // Cert contains the wrong nonce (all zeros instead of the expected hash).
+        let wrong_nonce = [0u8; 32];
+        let cert = make_fake_apple_cert(pub_bytes, &wrong_nonce);
+
+        let stmt = Value::Map(vec![(
+            Value::Text("x5c".to_string()),
+            Value::Array(vec![Value::Bytes(cert)]),
+        )]);
+
+        // auth_data and client_data_hash that produce a different nonce.
+        let result = verify(
+            "apple",
+            &stmt,
+            b"auth-data",
+            &[0xABu8; 32],
+            &credential_public_key,
+            &[],
+        );
+        assert!(
+            matches!(result, Err(WebAuthnError::InvalidAttestationObject(ref m)) if m.contains("nonce"))
+        );
+    }
+
+    #[test]
+    fn apple_rejects_key_mismatch() {
+        use ring::rand::SystemRandom;
+        use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_ASN1_SIGNING};
+
+        let rng = SystemRandom::new();
+
+        // Cert key and credential key are two different keypairs.
+        let cert_pkcs8 =
+            EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng).unwrap();
+        let cert_kp =
+            EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, cert_pkcs8.as_ref(), &rng)
+                .unwrap();
+        let cert_pub = cert_kp.public_key().as_ref();
+
+        let cred_pkcs8 =
+            EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng).unwrap();
+        let cred_kp =
+            EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, cred_pkcs8.as_ref(), &rng)
+                .unwrap();
+        let cred_pub = cred_kp.public_key().as_ref();
+        let credential_public_key = PublicKey::ES256 {
+            x: cred_pub[1..33].to_vec(),
+            y: cred_pub[33..65].to_vec(),
+        };
+
+        let auth_data = b"auth-data";
+        let client_data_hash = [0xABu8; 32];
+
+        // Compute the correct nonce so the nonce check passes.
+        let mut nonce_input = Vec::new();
+        nonce_input.extend_from_slice(auth_data);
+        nonce_input.extend_from_slice(&client_data_hash);
+        let nonce = crate::crypto::sha256(&nonce_input);
+
+        // Cert uses cert_pub (not the credential key) with the correct nonce.
+        let cert = make_fake_apple_cert(cert_pub, &nonce);
+
+        let stmt = Value::Map(vec![(
+            Value::Text("x5c".to_string()),
+            Value::Array(vec![Value::Bytes(cert)]),
+        )]);
+
+        let result = verify(
+            "apple",
+            &stmt,
+            auth_data,
+            &client_data_hash,
+            &credential_public_key,
+            &[],
+        );
+        assert!(
+            matches!(result, Err(WebAuthnError::InvalidAttestationObject(ref m)) if m.contains("does not match"))
+        );
+    }
+
+    #[test]
+    fn apple_valid_returns_basic() {
+        use ring::rand::SystemRandom;
+        use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_ASN1_SIGNING};
+
+        let rng = SystemRandom::new();
+        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng).unwrap();
+        let kp = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, pkcs8.as_ref(), &rng)
+            .unwrap();
+        let pub_bytes = kp.public_key().as_ref(); // 65 bytes: 0x04 || x || y
+        let credential_public_key = PublicKey::ES256 {
+            x: pub_bytes[1..33].to_vec(),
+            y: pub_bytes[33..65].to_vec(),
+        };
+
+        let auth_data = b"fake-auth-data";
+        let client_data_hash = [0xABu8; 32];
+
+        // Compute nonce = SHA-256(authData || clientDataHash)
+        let mut nonce_input = Vec::new();
+        nonce_input.extend_from_slice(auth_data);
+        nonce_input.extend_from_slice(&client_data_hash);
+        let nonce = crate::crypto::sha256(&nonce_input);
+
+        let cert = make_fake_apple_cert(pub_bytes, &nonce);
+
+        let stmt = Value::Map(vec![(
+            Value::Text("x5c".to_string()),
+            Value::Array(vec![Value::Bytes(cert)]),
+        )]);
+
+        let result = verify(
+            "apple",
+            &stmt,
+            auth_data,
+            &client_data_hash,
+            &credential_public_key,
+            &[],
+        );
+        assert!(matches!(result, Ok(AttestationType::Basic)));
+    }
+
     // ── helpers ──────────────────────────────────────────────────────────────
 
     fn dummy_es256_key() -> PublicKey {
@@ -1081,6 +1474,33 @@ mod tests {
         let mut cert = vec![0x30u8, 0x82, 0x01, 0x00]; // fake outer SEQUENCE header
         cert.extend_from_slice(spki_prefix);
         cert.extend_from_slice(pub_key_uncompressed); // 65 bytes: 0x04 || x || y
+        cert
+    }
+
+    /// Build a minimal byte buffer containing both the EC P-256 SPKI and the
+    /// Apple nonce extension (OID 1.2.840.113635.100.8.2) so Apple attestation
+    /// unit tests can exercise the full verify_apple() path.
+    fn make_fake_apple_cert(pub_key_uncompressed: &[u8], nonce: &[u8; 32]) -> Vec<u8> {
+        let spki_prefix: &[u8] = &[
+            0x30, 0x59, 0x30, 0x13, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01, 0x06,
+            0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07, 0x03, 0x42, 0x00,
+        ];
+        // DER encoding of OID 1.2.840.113635.100.8.2
+        let apple_oid: &[u8] = &[
+            0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x63, 0x64, 0x08, 0x02,
+        ];
+        let mut cert = vec![0x30u8, 0x82, 0x01, 0x00]; // fake outer SEQUENCE header
+        cert.extend_from_slice(spki_prefix);
+        cert.extend_from_slice(pub_key_uncompressed); // 65 bytes: 0x04 || x || y
+        cert.extend_from_slice(apple_oid);
+        // extnValue: OCTET STRING { SEQUENCE { SEQUENCE { OCTET STRING nonce } } }
+        // Lengths (all fit in one byte):
+        //   OCTET STRING nonce: 04 20 + 32 bytes = 34 bytes
+        //   Inner SEQUENCE:     30 22 + 34 bytes = 36 bytes
+        //   Outer SEQUENCE:     30 24 + 36 bytes = 38 bytes
+        //   extnValue wrapper:  04 26 + 38 bytes = 40 bytes
+        cert.extend_from_slice(&[0x04, 0x26, 0x30, 0x24, 0x30, 0x22, 0x04, 0x20]);
+        cert.extend_from_slice(nonce);
         cert
     }
 }

@@ -1583,6 +1583,84 @@ fn no_panic_on_random_authentication_input() {
     }
 }
 
+// ─── Apple attestation ───────────────────────────────────────────────────────
+
+#[test]
+fn apple_attestation_accepts_valid_cert() {
+    let rp = RelyingParty::new(RP_ID, ORIGIN, "Test RP");
+    let fixture = Fixture::new();
+
+    let reg_challenge = Challenge::new().unwrap();
+    let client_data_json =
+        make_client_data_json_bytes("webauthn.create", &reg_challenge.bytes, ORIGIN);
+    let auth_data = make_authenticator_data(
+        RP_ID,
+        0x41,
+        0,
+        Some((&fixture.cred_id, &fixture.public_key_bytes)),
+    );
+
+    // Compute expected nonce = SHA-256(authData || SHA-256(clientDataJSON))
+    let client_data_hash = webauthn::crypto::sha256(&client_data_json);
+    let mut nonce_input = auth_data.clone();
+    nonce_input.extend_from_slice(&client_data_hash);
+    let nonce = webauthn::crypto::sha256(&nonce_input);
+
+    // Synthetic Apple cert: correct nonce + matching credential public key.
+    let cert = make_apple_cert(&fixture.public_key_bytes, &nonce);
+
+    // Build attestation object with fmt="apple" and x5c=[cert] in attStmt.
+    let att_stmt = Value::Map(vec![(
+        Value::Text("x5c".to_string()),
+        Value::Array(vec![Value::Bytes(cert)]),
+    )]);
+    let att_obj_cbor = Value::Map(vec![
+        (
+            Value::Text("fmt".to_string()),
+            Value::Text("apple".to_string()),
+        ),
+        (Value::Text("attStmt".to_string()), att_stmt),
+        (Value::Text("authData".to_string()), Value::Bytes(auth_data)),
+    ]);
+    let mut attestation_object = Vec::new();
+    ciborium::into_writer(&att_obj_cbor, &mut attestation_object).unwrap();
+
+    let response = AuthenticatorAttestationResponse {
+        client_data_json,
+        attestation_object,
+    };
+
+    let result = rp
+        .verify_registration(&reg_challenge, &response, b"uid")
+        .expect("apple attestation with valid cert should succeed");
+    assert!(matches!(
+        result.attestation_type,
+        webauthn::AttestationType::Basic
+    ));
+}
+
+/// Build a minimal synthetic Apple credential certificate.
+///
+/// Contains the EC P-256 SPKI structure (for key-match verification) and the
+/// Apple nonce extension OID 1.2.840.113635.100.8.2 (for nonce verification).
+fn make_apple_cert(pub_key_uncompressed: &[u8], nonce: &[u8; 32]) -> Vec<u8> {
+    let spki_prefix: &[u8] = &[
+        0x30, 0x59, 0x30, 0x13, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01, 0x06, 0x08,
+        0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07, 0x03, 0x42, 0x00,
+    ];
+    let apple_oid: &[u8] = &[
+        0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x63, 0x64, 0x08, 0x02,
+    ];
+    let mut cert = vec![0x30u8, 0x82, 0x01, 0x00]; // fake outer SEQUENCE header
+    cert.extend_from_slice(spki_prefix);
+    cert.extend_from_slice(pub_key_uncompressed); // 65 bytes: 0x04 || x || y
+    cert.extend_from_slice(apple_oid);
+    // extnValue: OCTET STRING { SEQUENCE { SEQUENCE { OCTET STRING <32 bytes> } } }
+    cert.extend_from_slice(&[0x04, 0x26, 0x30, 0x24, 0x30, 0x22, 0x04, 0x20]);
+    cert.extend_from_slice(nonce);
+    cert
+}
+
 // ─── Multi-origin tests ───────────────────────────────────────────────────────
 
 #[test]
