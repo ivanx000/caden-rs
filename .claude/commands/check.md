@@ -1,6 +1,6 @@
 # /check
 
-Run the full WebAuthn quality suite, mirroring CI exactly, and report results.
+Run the full Caden quality suite, mirroring CI exactly, and report results.
 
 ## Steps
 
@@ -41,7 +41,7 @@ Run each check sequentially and collect pass/fail status:
 After all checks complete, print a summary table:
 
 ```
-=== WebAuthn quality check ===
+=== Caden quality check ===
 ✅ build
 ✅ fmt
 ✅ clippy
@@ -55,7 +55,7 @@ All checks passed.
 Or if any fail:
 
 ```
-=== WebAuthn quality check ===
+=== Caden quality check ===
 ✅ build
 ❌ fmt    — run `cargo fmt` to fix
 ✅ clippy

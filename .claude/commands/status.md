@@ -1,6 +1,6 @@
 # /status
 
-Print a project health summary for WebAuthn.
+Print a project health summary for Caden.
 
 ## Steps
 
@@ -39,7 +39,7 @@ Run each of the following and aggregate results:
 ## Output format
 
 ```
-=== WebAuthn project status ===
+=== Caden project status ===
 Branch:   main
 Commit:   abc1234 feat: add EdDSA support
 Unstaged: 0 files changed

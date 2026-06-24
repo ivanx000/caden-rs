@@ -1,8 +1,8 @@
 # /spec-audit
 
-Audit the webauthn codebase for W3C WebAuthn spec compliance.
+Audit the Caden codebase for W3C WebAuthn spec compliance.
 
-This command matters because webauthn is a security library. Every step in the W3C WebAuthn §7.1 and §7.2 algorithms must either be implemented or have an explicit note explaining why it is omitted. Missing steps are vulnerabilities.
+This command matters because Caden is a security library. Every step in the W3C WebAuthn §7.1 and §7.2 algorithms must either be implemented or have an explicit note explaining why it is omitted. Missing steps are vulnerabilities.
 
 ## Steps
 

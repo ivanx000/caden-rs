@@ -20,7 +20,7 @@ labels: bug
 
 ## Environment
 
-- webauthn version (git SHA or crate version):
+- caden version (git SHA or crate version):
 - Rust toolchain (`rustup show`):
 - OS:
 
