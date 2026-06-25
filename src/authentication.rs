@@ -115,8 +115,10 @@ fn verify_authentication_inner(
     }
 
     // ── §7.2 step 21 ─────────────────────────────────────────────────────────
-    // UV check is optional in this library — the caller decides whether to
-    // require user verification for their threat model.
+    // If the RP requires user verification, the UV flag must be set.
+    if rp.require_user_verification && !auth_data.flags.user_verified {
+        return Err(WebAuthnError::UserNotVerified);
+    }
 
     // ── §7.2 step 24 ─────────────────────────────────────────────────────────
     // Verify the signature over: authData || SHA-256(clientDataJSON).

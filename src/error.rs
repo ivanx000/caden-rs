@@ -35,6 +35,14 @@ pub enum WebAuthnError {
     #[error("User Present flag not set")]
     UserNotPresent,
 
+    /// The User Verification (UV) flag is not set, but the relying party has
+    /// `require_user_verification` enabled.
+    ///
+    /// The authenticator must perform user verification (PIN, biometric, etc.)
+    /// before the assertion is accepted.
+    #[error("User Verification flag not set")]
+    UserNotVerified,
+
     /// The attestation object could not be decoded or is missing required fields.
     #[error("Invalid attestation object: {0}")]
     InvalidAttestationObject(String),

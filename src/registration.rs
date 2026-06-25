@@ -67,6 +67,15 @@ pub struct RelyingParty {
 
     /// Human-readable name shown to users, e.g. `"My Service"`.
     pub name: String,
+
+    /// Whether the UV (User Verification) flag must be set in every
+    /// authentication assertion. Defaults to `false`.
+    ///
+    /// Set to `true` when your threat model requires the authenticator to
+    /// verify the user's identity (PIN, biometric, pattern) on every sign-in.
+    /// See [`RelyingParty::require_user_verification`] to enable this at
+    /// construction time using the builder pattern.
+    pub require_user_verification: bool,
 }
 
 impl RelyingParty {
@@ -81,6 +90,7 @@ impl RelyingParty {
             id: id.to_string(),
             allowed_origins: vec![origin.to_string()],
             name: name.to_string(),
+            require_user_verification: false,
         }
     }
 
@@ -104,7 +114,28 @@ impl RelyingParty {
             id: id.to_string(),
             allowed_origins: origins.into_iter().map(Into::into).collect(),
             name: name.to_string(),
+            require_user_verification: false,
         }
+    }
+
+    /// Require the UV (User Verification) flag on every authentication assertion.
+    ///
+    /// When `true`, `verify_authentication` returns
+    /// [`crate::error::WebAuthnError::UserNotVerified`] if the authenticator's
+    /// `UV` bit is not set — meaning the user was not verified via PIN,
+    /// biometric, or another local gesture.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use webauthn::RelyingParty;
+    ///
+    /// let rp = RelyingParty::new("example.com", "https://example.com", "My Service")
+    ///     .require_user_verification(true);
+    /// ```
+    pub fn require_user_verification(mut self, required: bool) -> Self {
+        self.require_user_verification = required;
+        self
     }
 
     /// Verify a registration ceremony response (W3C WebAuthn §7.1).

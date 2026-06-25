@@ -1661,6 +1661,106 @@ fn make_apple_cert(pub_key_uncompressed: &[u8], nonce: &[u8; 32]) -> Vec<u8> {
     cert
 }
 
+// ─── UV flag enforcement tests ────────────────────────────────────────────────
+
+#[test]
+fn uv_enforcement_rejects_when_uv_flag_not_set() {
+    // RP requires user verification; authenticator only sets UP (not UV).
+    let fixture = Fixture::new();
+    let rp = RelyingParty::new(RP_ID, ORIGIN, "Test RP").require_user_verification(true);
+
+    let reg_challenge = Challenge::new().unwrap();
+    let response = fixture.make_registration_response(
+        &reg_challenge.bytes,
+        "webauthn.create",
+        ORIGIN,
+        RP_ID,
+        0x41, // UP + AT
+        0,
+        "none",
+    );
+    let credential = rp
+        .verify_registration(&reg_challenge, &response, b"uid")
+        .unwrap()
+        .credential;
+
+    let auth_challenge = Challenge::new().unwrap();
+    // flags=0x01 means UP only — UV bit (0x04) is cleared.
+    let auth_response =
+        fixture.make_auth_response_flags(&auth_challenge.bytes, ORIGIN, RP_ID, 1, 0x01);
+
+    let err = rp
+        .verify_authentication(&credential, &auth_challenge, &auth_response)
+        .unwrap_err();
+    assert!(
+        matches!(err, WebAuthnError::UserNotVerified),
+        "expected UserNotVerified, got {err:?}"
+    );
+}
+
+#[test]
+fn uv_enforcement_accepts_when_uv_flag_set() {
+    // RP requires user verification; authenticator sets both UP and UV.
+    let fixture = Fixture::new();
+    let rp = RelyingParty::new(RP_ID, ORIGIN, "Test RP").require_user_verification(true);
+
+    let reg_challenge = Challenge::new().unwrap();
+    let response = fixture.make_registration_response(
+        &reg_challenge.bytes,
+        "webauthn.create",
+        ORIGIN,
+        RP_ID,
+        0x41, // UP + AT
+        0,
+        "none",
+    );
+    let credential = rp
+        .verify_registration(&reg_challenge, &response, b"uid")
+        .unwrap()
+        .credential;
+
+    let auth_challenge = Challenge::new().unwrap();
+    // flags=0x05 means UP + UV.
+    let auth_response =
+        fixture.make_auth_response_flags(&auth_challenge.bytes, ORIGIN, RP_ID, 1, 0x05);
+
+    let result = rp
+        .verify_authentication(&credential, &auth_challenge, &auth_response)
+        .expect("should accept when UV flag is set");
+    assert!(result.user_verified);
+}
+
+#[test]
+fn uv_not_enforced_by_default_when_flag_absent() {
+    // Default RP does not require UV; UP-only responses must still be accepted.
+    let fixture = Fixture::new();
+    let rp = RelyingParty::new(RP_ID, ORIGIN, "Test RP");
+
+    let reg_challenge = Challenge::new().unwrap();
+    let response = fixture.make_registration_response(
+        &reg_challenge.bytes,
+        "webauthn.create",
+        ORIGIN,
+        RP_ID,
+        0x41, // UP + AT
+        0,
+        "none",
+    );
+    let credential = rp
+        .verify_registration(&reg_challenge, &response, b"uid")
+        .unwrap()
+        .credential;
+
+    let auth_challenge = Challenge::new().unwrap();
+    let auth_response =
+        fixture.make_auth_response_flags(&auth_challenge.bytes, ORIGIN, RP_ID, 1, 0x01); // UP only
+
+    let result = rp
+        .verify_authentication(&credential, &auth_challenge, &auth_response)
+        .expect("should accept UP-only response when UV is not required");
+    assert!(!result.user_verified);
+}
+
 // ─── Multi-origin tests ───────────────────────────────────────────────────────
 
 #[test]
