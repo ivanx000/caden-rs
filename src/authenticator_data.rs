@@ -35,6 +35,10 @@ use crate::error::{Result, WebAuthnError};
 const FLAG_UP: u8 = 0x01;
 /// Bit 2: User Verified — biometric / PIN check passed.
 const FLAG_UV: u8 = 0x04;
+/// Bit 3: Backup Eligibility — the credential may be synced to a platform account.
+const FLAG_BE: u8 = 0x08;
+/// Bit 4: Backup State — the credential is currently backed up.
+const FLAG_BS: u8 = 0x10;
 /// Bit 6: Attested Credential Data — `attestedCredentialData` is present.
 const FLAG_AT: u8 = 0x40;
 /// Bit 7: Extension Data — CBOR extensions follow the credential data.
@@ -55,6 +59,11 @@ pub struct AuthenticatorFlags {
     pub user_present: bool,
     /// UV: biometric or PIN check passed.
     pub user_verified: bool,
+    /// BE: the credential is eligible for backup to a platform sync service.
+    /// Immutable — set at registration and cannot change across ceremonies.
+    pub backup_eligible: bool,
+    /// BS: the credential is currently backed up. May change between ceremonies.
+    pub backup_state: bool,
     /// AT: attested credential data is included (registration only).
     pub attested_credential_data: bool,
     /// ED: a CBOR extension map follows the credential data.
@@ -175,9 +184,19 @@ pub fn parse_authenticator_data(data: &[u8]) -> Result<AuthenticatorData> {
     let flags = AuthenticatorFlags {
         user_present: flags_byte & FLAG_UP != 0,
         user_verified: flags_byte & FLAG_UV != 0,
+        backup_eligible: flags_byte & FLAG_BE != 0,
+        backup_state: flags_byte & FLAG_BS != 0,
         attested_credential_data: flags_byte & FLAG_AT != 0,
         extension_data: flags_byte & FLAG_ED != 0,
     };
+
+    // §6.1: BS can only be set when BE is also set — a credential cannot be backed
+    // up without first being backup-eligible.
+    if flags.backup_state && !flags.backup_eligible {
+        return Err(WebAuthnError::InvalidAuthenticatorData(
+            "BS flag (backup state) is set but BE flag (backup eligibility) is not — invalid per §6.1".to_string(),
+        ));
+    }
 
     // §6.1: Parse sign count (big-endian u32). Bytes 33–36 are within the 37-byte minimum.
     let sign_count = u32::from_be_bytes(
@@ -549,6 +568,33 @@ mod tests {
         out.extend_from_slice(cred_id);
         out.extend_from_slice(pk_cbor);
         out
+    }
+
+    // ── BE / BS flag parsing ─────────────────────────────────────────────────
+
+    #[test]
+    fn parses_be_flag() {
+        let data = make_auth_data(&[0u8; 32], FLAG_UP | FLAG_BE, 0, None);
+        let parsed = parse_authenticator_data(&data).unwrap();
+        assert!(parsed.flags.backup_eligible);
+        assert!(!parsed.flags.backup_state);
+    }
+
+    #[test]
+    fn parses_be_and_bs_flags() {
+        let data = make_auth_data(&[0u8; 32], FLAG_UP | FLAG_BE | FLAG_BS, 0, None);
+        let parsed = parse_authenticator_data(&data).unwrap();
+        assert!(parsed.flags.backup_eligible);
+        assert!(parsed.flags.backup_state);
+    }
+
+    #[test]
+    fn rejects_bs_without_be() {
+        // §6.1: BS set without BE is an invalid combination.
+        let data = make_auth_data(&[0u8; 32], FLAG_UP | FLAG_BS, 0, None);
+        let err = parse_authenticator_data(&data).unwrap_err();
+        assert!(matches!(err, WebAuthnError::InvalidAuthenticatorData(_)));
+        assert!(err.to_string().contains("BS"));
     }
 
     // ── parse_authenticator_data ─────────────────────────────────────────────
