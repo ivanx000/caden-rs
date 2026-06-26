@@ -123,6 +123,14 @@ fn verify_authentication_inner(
         return Err(WebAuthnError::UserNotVerified);
     }
 
+    // ── §7.2 step 21 — Backup Eligibility policy ──────────────────────────────
+    if rp.reject_backup_eligible && auth_data.flags.backup_eligible {
+        return Err(WebAuthnError::BackupEligibleNotAllowed);
+    }
+    if rp.require_backup_eligible && !auth_data.flags.backup_eligible {
+        return Err(WebAuthnError::BackupEligibilityRequired);
+    }
+
     // ── §7.2 step 24 ─────────────────────────────────────────────────────────
     // Verify the signature over: authData || SHA-256(clientDataJSON).
     //
@@ -170,5 +178,7 @@ fn verify_authentication_inner(
         new_sign_count: received,
         user_present: auth_data.flags.user_present,
         user_verified: auth_data.flags.user_verified,
+        backup_eligible: auth_data.flags.backup_eligible,
+        backup_state: auth_data.flags.backup_state,
     })
 }

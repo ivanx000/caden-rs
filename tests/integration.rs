@@ -656,6 +656,252 @@ fn rejects_replay_attack_lower_sign_count() {
     ));
 }
 
+// ─── Backup Eligibility / Backup State (BE / BS) flag tests ──────────────────
+
+#[test]
+fn default_rp_accepts_backup_eligible_credential() {
+    let rp = RelyingParty::new(RP_ID, ORIGIN, "Test RP");
+    let fixture = Fixture::new();
+
+    let ch = Challenge::new().unwrap();
+    let response = fixture.make_registration_response(
+        &ch.bytes,
+        "webauthn.create",
+        ORIGIN,
+        RP_ID,
+        0x49, // UP + AT + BE
+        1,
+        "none",
+    );
+    let result = rp.verify_registration(&ch, &response, b"uid").unwrap();
+    assert!(result.backup_eligible);
+    assert!(!result.backup_state);
+}
+
+#[test]
+fn default_rp_accepts_non_backup_eligible_credential() {
+    let rp = RelyingParty::new(RP_ID, ORIGIN, "Test RP");
+    let fixture = Fixture::new();
+
+    let ch = Challenge::new().unwrap();
+    let response = fixture.make_registration_response(
+        &ch.bytes,
+        "webauthn.create",
+        ORIGIN,
+        RP_ID,
+        0x41, // UP + AT (no BE)
+        1,
+        "none",
+    );
+    let result = rp.verify_registration(&ch, &response, b"uid").unwrap();
+    assert!(!result.backup_eligible);
+    assert!(!result.backup_state);
+}
+
+#[test]
+fn require_backup_eligible_rejects_non_be_at_registration() {
+    let rp = RelyingParty::new(RP_ID, ORIGIN, "Test RP").require_backup_eligible(true);
+    let fixture = Fixture::new();
+
+    let ch = Challenge::new().unwrap();
+    let response = fixture.make_registration_response(
+        &ch.bytes,
+        "webauthn.create",
+        ORIGIN,
+        RP_ID,
+        0x41, // UP + AT — no BE
+        1,
+        "none",
+    );
+    let err = rp.verify_registration(&ch, &response, b"uid").unwrap_err();
+    assert!(matches!(err, WebAuthnError::BackupEligibilityRequired));
+}
+
+#[test]
+fn require_backup_eligible_accepts_be_at_registration() {
+    let rp = RelyingParty::new(RP_ID, ORIGIN, "Test RP").require_backup_eligible(true);
+    let fixture = Fixture::new();
+
+    let ch = Challenge::new().unwrap();
+    let response = fixture.make_registration_response(
+        &ch.bytes,
+        "webauthn.create",
+        ORIGIN,
+        RP_ID,
+        0x49, // UP + AT + BE
+        1,
+        "none",
+    );
+    rp.verify_registration(&ch, &response, b"uid").unwrap();
+}
+
+#[test]
+fn reject_backup_eligible_rejects_be_at_registration() {
+    let rp = RelyingParty::new(RP_ID, ORIGIN, "Test RP").reject_backup_eligible(true);
+    let fixture = Fixture::new();
+
+    let ch = Challenge::new().unwrap();
+    let response = fixture.make_registration_response(
+        &ch.bytes,
+        "webauthn.create",
+        ORIGIN,
+        RP_ID,
+        0x49, // UP + AT + BE
+        1,
+        "none",
+    );
+    let err = rp.verify_registration(&ch, &response, b"uid").unwrap_err();
+    assert!(matches!(err, WebAuthnError::BackupEligibleNotAllowed));
+}
+
+#[test]
+fn reject_backup_eligible_accepts_non_be_at_registration() {
+    let rp = RelyingParty::new(RP_ID, ORIGIN, "Test RP").reject_backup_eligible(true);
+    let fixture = Fixture::new();
+
+    let ch = Challenge::new().unwrap();
+    let response = fixture.make_registration_response(
+        &ch.bytes,
+        "webauthn.create",
+        ORIGIN,
+        RP_ID,
+        0x41, // UP + AT — no BE
+        1,
+        "none",
+    );
+    rp.verify_registration(&ch, &response, b"uid").unwrap();
+}
+
+#[test]
+fn require_backup_eligible_rejects_non_be_at_authentication() {
+    let rp = RelyingParty::new(RP_ID, ORIGIN, "Test RP").require_backup_eligible(true);
+    let fixture = Fixture::new();
+    // Register succeeds because we use BE flags.
+    let credential = {
+        let ch = Challenge::new().unwrap();
+        let r = fixture.make_registration_response(
+            &ch.bytes,
+            "webauthn.create",
+            ORIGIN,
+            RP_ID,
+            0x49,
+            1,
+            "none",
+        );
+        rp.verify_registration(&ch, &r, b"uid").unwrap().credential
+    };
+
+    // Authenticate without BE — policy should reject it.
+    let ch = Challenge::new().unwrap();
+    let response = fixture.make_auth_response_flags(&ch.bytes, ORIGIN, RP_ID, 2, 0x01); // UP only
+    let err = rp
+        .verify_authentication(&credential, &ch, &response)
+        .unwrap_err();
+    assert!(matches!(err, WebAuthnError::BackupEligibilityRequired));
+}
+
+#[test]
+fn require_backup_eligible_accepts_be_at_authentication() {
+    let rp = RelyingParty::new(RP_ID, ORIGIN, "Test RP").require_backup_eligible(true);
+    let fixture = Fixture::new();
+    let credential = {
+        let ch = Challenge::new().unwrap();
+        let r = fixture.make_registration_response(
+            &ch.bytes,
+            "webauthn.create",
+            ORIGIN,
+            RP_ID,
+            0x49,
+            1,
+            "none",
+        );
+        rp.verify_registration(&ch, &r, b"uid").unwrap().credential
+    };
+
+    let ch = Challenge::new().unwrap();
+    let response = fixture.make_auth_response_flags(&ch.bytes, ORIGIN, RP_ID, 2, 0x09); // UP + BE
+    rp.verify_authentication(&credential, &ch, &response)
+        .unwrap();
+}
+
+#[test]
+fn reject_backup_eligible_rejects_be_at_authentication() {
+    let rp = RelyingParty::new(RP_ID, ORIGIN, "Test RP").reject_backup_eligible(true);
+    let fixture = Fixture::new();
+    let credential = {
+        let ch = Challenge::new().unwrap();
+        let r = fixture.make_registration_response(
+            &ch.bytes,
+            "webauthn.create",
+            ORIGIN,
+            RP_ID,
+            0x41,
+            1,
+            "none",
+        );
+        rp.verify_registration(&ch, &r, b"uid").unwrap().credential
+    };
+
+    let ch = Challenge::new().unwrap();
+    let response = fixture.make_auth_response_flags(&ch.bytes, ORIGIN, RP_ID, 2, 0x09); // UP + BE
+    let err = rp
+        .verify_authentication(&credential, &ch, &response)
+        .unwrap_err();
+    assert!(matches!(err, WebAuthnError::BackupEligibleNotAllowed));
+}
+
+#[test]
+fn reject_backup_eligible_accepts_non_be_at_authentication() {
+    let rp = RelyingParty::new(RP_ID, ORIGIN, "Test RP").reject_backup_eligible(true);
+    let fixture = Fixture::new();
+    let credential = {
+        let ch = Challenge::new().unwrap();
+        let r = fixture.make_registration_response(
+            &ch.bytes,
+            "webauthn.create",
+            ORIGIN,
+            RP_ID,
+            0x41,
+            1,
+            "none",
+        );
+        rp.verify_registration(&ch, &r, b"uid").unwrap().credential
+    };
+
+    let ch = Challenge::new().unwrap();
+    let response = fixture.make_auth_response_flags(&ch.bytes, ORIGIN, RP_ID, 2, 0x01); // UP only
+    rp.verify_authentication(&credential, &ch, &response)
+        .unwrap();
+}
+
+#[test]
+fn authentication_result_exposes_backup_state() {
+    let rp = RelyingParty::new(RP_ID, ORIGIN, "Test RP");
+    let fixture = Fixture::new();
+    let credential = {
+        let ch = Challenge::new().unwrap();
+        let r = fixture.make_registration_response(
+            &ch.bytes,
+            "webauthn.create",
+            ORIGIN,
+            RP_ID,
+            0x49, // UP + AT + BE
+            1,
+            "none",
+        );
+        rp.verify_registration(&ch, &r, b"uid").unwrap().credential
+    };
+
+    let ch = Challenge::new().unwrap();
+    // 0x19 = UP (0x01) + BE (0x08) + BS (0x10)
+    let response = fixture.make_auth_response_flags(&ch.bytes, ORIGIN, RP_ID, 2, 0x19);
+    let result = rp
+        .verify_authentication(&credential, &ch, &response)
+        .unwrap();
+    assert!(result.backup_eligible);
+    assert!(result.backup_state);
+}
+
 // ─── Convenience helpers ──────────────────────────────────────────────────────
 
 fn register_credential(rp: &RelyingParty, fixture: &Fixture) -> webauthn::Credential {

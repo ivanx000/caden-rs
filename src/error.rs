@@ -95,6 +95,22 @@ pub enum WebAuthnError {
     /// usage, `crossOrigin: true` may indicate credential abuse.
     #[error("Cross-origin credential use is not permitted by this relying party")]
     CrossOriginNotAllowed,
+
+    /// The credential has the Backup Eligibility (BE) flag set, but this relying
+    /// party has `reject_backup_eligible` enabled.
+    ///
+    /// Use this policy when your threat model requires hardware-bound keys that
+    /// cannot be synced to a cloud or platform account.
+    #[error("Credential is backup-eligible but this relying party does not permit backed-up credentials")]
+    BackupEligibleNotAllowed,
+
+    /// The credential does not have the Backup Eligibility (BE) flag set, but
+    /// this relying party has `require_backup_eligible` enabled.
+    ///
+    /// Use this policy for consumer passkey deployments that depend on credential
+    /// sync (e.g. cross-device sign-in via iCloud Keychain or Google Password Manager).
+    #[error("Credential is not backup-eligible but this relying party requires backup-eligible credentials")]
+    BackupEligibilityRequired,
 }
 
 /// Convenience alias so callers write `webauthn::Result<T>`.

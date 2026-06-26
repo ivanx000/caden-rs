@@ -97,6 +97,22 @@ pub struct RelyingParty {
     ///
     /// Use [`RelyingParty::allowed_algorithms`] to set this at construction time.
     pub allowed_algorithms: Vec<i64>,
+
+    /// Whether to reject credentials that are not backup-eligible (BE flag not set).
+    /// Defaults to `false`.
+    ///
+    /// Set to `true` for consumer passkey deployments that require cross-device
+    /// sign-in via platform sync services (iCloud Keychain, Google Password Manager).
+    /// See [`RelyingParty::require_backup_eligible`] to enable via the builder.
+    pub require_backup_eligible: bool,
+
+    /// Whether to reject credentials that are backup-eligible (BE flag is set).
+    /// Defaults to `false`.
+    ///
+    /// Set to `true` for high-security environments (banking, SSH) that require
+    /// hardware-bound keys that cannot leave the device.
+    /// See [`RelyingParty::reject_backup_eligible`] to enable via the builder.
+    pub reject_backup_eligible: bool,
 }
 
 impl RelyingParty {
@@ -114,6 +130,8 @@ impl RelyingParty {
             require_user_verification: false,
             reject_cross_origin: false,
             allowed_algorithms: vec![],
+            require_backup_eligible: false,
+            reject_backup_eligible: false,
         }
     }
 
@@ -140,6 +158,8 @@ impl RelyingParty {
             require_user_verification: false,
             reject_cross_origin: false,
             allowed_algorithms: vec![],
+            require_backup_eligible: false,
+            reject_backup_eligible: false,
         }
     }
 
@@ -199,6 +219,44 @@ impl RelyingParty {
     /// ```
     pub fn allowed_algorithms(mut self, algs: impl IntoIterator<Item = i64>) -> Self {
         self.allowed_algorithms = algs.into_iter().collect();
+        self
+    }
+
+    /// Require that credentials are backup-eligible (BE flag must be set).
+    ///
+    /// When `true`, `verify_registration` and `verify_authentication` return
+    /// [`crate::error::WebAuthnError::BackupEligibilityRequired`] for any
+    /// credential whose BE flag is not set.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use webauthn::RelyingParty;
+    ///
+    /// let rp = RelyingParty::new("example.com", "https://example.com", "My Service")
+    ///     .require_backup_eligible(true);
+    /// ```
+    pub fn require_backup_eligible(mut self, required: bool) -> Self {
+        self.require_backup_eligible = required;
+        self
+    }
+
+    /// Reject credentials that are backup-eligible (BE flag must not be set).
+    ///
+    /// When `true`, `verify_registration` and `verify_authentication` return
+    /// [`crate::error::WebAuthnError::BackupEligibleNotAllowed`] for any
+    /// credential whose BE flag is set.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use webauthn::RelyingParty;
+    ///
+    /// let rp = RelyingParty::new("example.com", "https://example.com", "My Service")
+    ///     .reject_backup_eligible(true);
+    /// ```
+    pub fn reject_backup_eligible(mut self, reject: bool) -> Self {
+        self.reject_backup_eligible = reject;
         self
     }
 
@@ -294,6 +352,15 @@ fn verify_registration_inner(
         return Err(WebAuthnError::UserNotPresent);
     }
 
+    // ── §7.1 step 18 ──────────────────────────────────────────────────────────
+    // Apply the RP's backup eligibility policy.
+    if rp.reject_backup_eligible && auth_data.flags.backup_eligible {
+        return Err(WebAuthnError::BackupEligibleNotAllowed);
+    }
+    if rp.require_backup_eligible && !auth_data.flags.backup_eligible {
+        return Err(WebAuthnError::BackupEligibilityRequired);
+    }
+
     // ── §7.1 step 16 ──────────────────────────────────────────────────────────
     // Verify that the AT (Attested Credential Data) flag is set.
     // If absent, the authenticator did not include a public key — unusable.
@@ -343,6 +410,9 @@ fn verify_registration_inner(
         &cred_data.credential_id,
     )?;
 
+    let backup_eligible = auth_data.flags.backup_eligible;
+    let backup_state = auth_data.flags.backup_state;
+
     // ── §7.1 step 25 ──────────────────────────────────────────────────────────
     // Build the Credential. The caller must persist this object.
     let credential = Credential {
@@ -357,6 +427,8 @@ fn verify_registration_inner(
     Ok(RegistrationResult {
         credential,
         attestation_type,
+        backup_eligible,
+        backup_state,
     })
 }
 
