@@ -12,7 +12,7 @@
 use ciborium::value::Value;
 use std::time::SystemTime;
 
-use crate::algorithm::{COSE_EDDSA, COSE_ES256};
+use crate::algorithm::{COSE_EDDSA, COSE_ES256, COSE_RS256};
 use crate::attestation;
 use crate::authenticator_data::{self, CoseKey};
 use crate::challenge::CHALLENGE_MAX_AGE_SECS;
@@ -87,6 +87,16 @@ pub struct RelyingParty {
     /// See [`RelyingParty::reject_cross_origin`] to enable this using the
     /// builder pattern.
     pub reject_cross_origin: bool,
+
+    /// COSE algorithm identifiers this RP accepts at registration time.
+    ///
+    /// When non-empty, `verify_registration` returns
+    /// [`crate::error::WebAuthnError::UnsupportedAlgorithm`] if the credential's
+    /// algorithm is not in this list. An empty list (the default) accepts any
+    /// algorithm the library supports (ES256, EdDSA, RS256).
+    ///
+    /// Use [`RelyingParty::allowed_algorithms`] to set this at construction time.
+    pub allowed_algorithms: Vec<i64>,
 }
 
 impl RelyingParty {
@@ -103,6 +113,7 @@ impl RelyingParty {
             name: name.to_string(),
             require_user_verification: false,
             reject_cross_origin: false,
+            allowed_algorithms: vec![],
         }
     }
 
@@ -128,6 +139,7 @@ impl RelyingParty {
             name: name.to_string(),
             require_user_verification: false,
             reject_cross_origin: false,
+            allowed_algorithms: vec![],
         }
     }
 
@@ -167,6 +179,26 @@ impl RelyingParty {
     /// ```
     pub fn reject_cross_origin(mut self, reject: bool) -> Self {
         self.reject_cross_origin = reject;
+        self
+    }
+
+    /// Restrict which COSE algorithms this RP accepts at registration time.
+    ///
+    /// When the list is non-empty, `verify_registration` rejects any credential
+    /// whose algorithm is not in this list with
+    /// [`crate::error::WebAuthnError::UnsupportedAlgorithm`].
+    /// An empty list (the default) accepts ES256, EdDSA, and RS256.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use webauthn::{RelyingParty, COSE_ES256};
+    ///
+    /// let rp = RelyingParty::new("example.com", "https://example.com", "My Service")
+    ///     .allowed_algorithms([COSE_ES256]);
+    /// ```
+    pub fn allowed_algorithms(mut self, algs: impl IntoIterator<Item = i64>) -> Self {
+        self.allowed_algorithms = algs.into_iter().collect();
         self
     }
 
@@ -276,6 +308,20 @@ fn verify_registration_inner(
     // The parser already validated kty, crv (for EC2), and alg (for RSA).
     // Here we additionally check that EC2 keys use ES256 (the only EC2 algorithm
     // we support), and reject any combination we cannot verify.
+    //
+    // Read the algorithm integer first (by reference) so we can check the RP's
+    // allowlist before consuming the CoseKey.
+    let cose_alg: i64 = match &cred_data.public_key {
+        CoseKey::EC2 { alg, .. } => *alg,
+        CoseKey::OKP { alg, .. } => *alg,
+        CoseKey::RSA { .. } => COSE_RS256,
+    };
+
+    // §7.1 step 17 — reject the credential algorithm if not in the RP's allowlist.
+    if !rp.allowed_algorithms.is_empty() && !rp.allowed_algorithms.contains(&cose_alg) {
+        return Err(WebAuthnError::UnsupportedAlgorithm(cose_alg));
+    }
+
     let public_key = match cred_data.public_key {
         CoseKey::EC2 { alg, x, y, .. } if alg == COSE_ES256 => PublicKey::ES256 { x, y },
         CoseKey::EC2 { alg, .. } => return Err(WebAuthnError::UnsupportedAlgorithm(alg)),

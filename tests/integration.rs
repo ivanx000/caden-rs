@@ -1761,6 +1761,97 @@ fn uv_not_enforced_by_default_when_flag_absent() {
     assert!(!result.user_verified);
 }
 
+// ─── Algorithm allowlist tests ───────────────────────────────────────────────
+
+#[test]
+fn allowlist_empty_accepts_es256() {
+    // Default RP (empty allowlist) must still accept ES256.
+    let rp = RelyingParty::new(RP_ID, ORIGIN, "Test RP");
+    let fixture = Fixture::new();
+    let challenge = Challenge::new().unwrap();
+    let response = fixture.make_registration_response(
+        &challenge.bytes,
+        "webauthn.create",
+        ORIGIN,
+        RP_ID,
+        0x41,
+        0,
+        "none",
+    );
+    rp.verify_registration(&challenge, &response, b"uid")
+        .expect("empty allowlist should accept ES256");
+}
+
+#[test]
+fn allowlist_es256_only_accepts_es256() {
+    let rp = RelyingParty::new(RP_ID, ORIGIN, "Test RP").allowed_algorithms([webauthn::COSE_ES256]);
+    let fixture = Fixture::new();
+    let challenge = Challenge::new().unwrap();
+    let response = fixture.make_registration_response(
+        &challenge.bytes,
+        "webauthn.create",
+        ORIGIN,
+        RP_ID,
+        0x41,
+        0,
+        "none",
+    );
+    rp.verify_registration(&challenge, &response, b"uid")
+        .expect("ES256-only allowlist should accept ES256");
+}
+
+#[test]
+fn allowlist_es256_only_rejects_rs256() {
+    let rp = RelyingParty::new(RP_ID, ORIGIN, "Test RP").allowed_algorithms([webauthn::COSE_ES256]);
+    let fixture = RsaFixture::new();
+    let challenge = Challenge::new().unwrap();
+    let response = fixture.make_registration_response(&challenge.bytes, ORIGIN, RP_ID, 0x41, 0);
+    let err = rp
+        .verify_registration(&challenge, &response, b"uid")
+        .unwrap_err();
+    assert!(
+        matches!(err, WebAuthnError::UnsupportedAlgorithm(-257)),
+        "expected UnsupportedAlgorithm(-257), got {err:?}"
+    );
+}
+
+#[test]
+fn allowlist_rs256_only_accepts_rs256() {
+    let rp = RelyingParty::new(RP_ID, ORIGIN, "Test RP").allowed_algorithms([webauthn::COSE_RS256]);
+    let fixture = RsaFixture::new();
+    let challenge = Challenge::new().unwrap();
+    let response = fixture.make_registration_response(&challenge.bytes, ORIGIN, RP_ID, 0x41, 0);
+    rp.verify_registration(&challenge, &response, b"uid")
+        .expect("RS256-only allowlist should accept RS256");
+}
+
+#[test]
+fn allowlist_es256_and_rs256_accepts_both() {
+    let rp = RelyingParty::new(RP_ID, ORIGIN, "Test RP")
+        .allowed_algorithms([webauthn::COSE_ES256, webauthn::COSE_RS256]);
+
+    let es_fixture = Fixture::new();
+    let es_challenge = Challenge::new().unwrap();
+    let es_response = es_fixture.make_registration_response(
+        &es_challenge.bytes,
+        "webauthn.create",
+        ORIGIN,
+        RP_ID,
+        0x41,
+        0,
+        "none",
+    );
+    rp.verify_registration(&es_challenge, &es_response, b"uid")
+        .expect("ES256+RS256 allowlist should accept ES256");
+
+    let rs_fixture = RsaFixture::new();
+    let rs_challenge = Challenge::new().unwrap();
+    let rs_response =
+        rs_fixture.make_registration_response(&rs_challenge.bytes, ORIGIN, RP_ID, 0x41, 0);
+    rp.verify_registration(&rs_challenge, &rs_response, b"uid")
+        .expect("ES256+RS256 allowlist should accept RS256");
+}
+
 // ─── Multi-origin tests ───────────────────────────────────────────────────────
 
 #[test]
