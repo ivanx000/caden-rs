@@ -274,7 +274,6 @@ Canonical spec: https://www.w3.org/TR/webauthn-3/
 | `"tpm"` attestation | Not implemented |
 | Apple cert chain | Nonce + key-match verified; cert chain not verified (no Apple MDS trust anchors) |
 | Extension data ignored | The extensions section of authenticator data is parsed but silently skipped |
-| `crossOrigin: true` accepted | Some RPs should reject cross-origin requests; currently allowed |
 | Challenge single-use enforcement | The caller is responsible — the library does not maintain a used-challenge set |
 | No FIDO Metadata Service | Authenticator model/provenance cannot be verified |
 | UV flag optional | Off by default; enable with `RelyingParty::new(...).require_user_verification(true)` |

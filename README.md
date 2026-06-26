@@ -50,6 +50,7 @@ worthless without private keys), and password reuse (each site gets a unique key
 | Android Key attestation (`"android-key"`) | ✅ Implemented — signature + key-match verified; cert chain requires FIDO MDS |
 | Apple attestation (`"apple"`) | ✅ Implemented — nonce extension + key-match verified; cert chain requires Apple MDS |
 | UV flag enforcement (`require_user_verification`) | ✅ Implemented — opt-in via builder; off by default |
+| Algorithm allowlist (`allowed_algorithms`) | ✅ Implemented — opt-in via builder; empty = accept all |
 | Sign-count replay attack detection | ✅ Implemented |
 | Challenge generation (32-byte CSPRNG) | ✅ Implemented |
 | `#![forbid(unsafe_code)]` | ✅ Enforced at compile time |
