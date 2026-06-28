@@ -113,6 +113,17 @@ uncompressed EC point format that `ring` expects for signature verification.
 The COSE key encodes `x` and `y` as separate byte strings; `authenticator_data.rs`
 joins them into the `0x04 || x || y` form during parsing.
 
+### Optional `serde` feature for public-type serialization
+
+`serde` is already an unconditional dependency (used by `client_data.rs` for
+`clientDataJSON` parsing). The `serde` feature gates `Serialize + Deserialize`
+derives on all public-facing types — `Credential`, `PublicKey`, `Challenge`,
+`RegistrationResult`, `AuthenticationResult`, `AttestationType`, and
+`WebAuthnError`. `Vec<u8>` fields use `#[serde(with = "serde_bytes")]` so they
+encode as compact byte sequences (base64 in JSON) rather than arrays of integers.
+`serde_bytes` is an optional dependency pulled in only when the feature is enabled.
+Enable with `features = ["serde"]` in `Cargo.toml`.
+
 ---
 
 ## Registration ceremony — W3C §7.1 step mapping
@@ -169,6 +180,9 @@ cargo build
 
 # Run all tests (unit + integration + doc tests)
 cargo test
+
+# Run tests with the serde feature enabled (+5 round-trip tests)
+cargo test --features serde
 
 # Run only unit tests inside each module
 cargo test --lib
