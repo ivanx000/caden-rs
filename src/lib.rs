@@ -95,6 +95,16 @@
 //! > [`webauthn-rs`](https://crates.io/crates/webauthn-rs), which includes FIDO MDS
 //! > integration and a broader attestation format set.
 //!
+//! ## Features
+//!
+//! | Feature | Default | Description |
+//! |---------|---------|-------------|
+//! | `serde` | off | Derives [`serde::Serialize`] and [`serde::Deserialize`] on [`Credential`], [`PublicKey`], [`Challenge`], [`RegistrationResult`], [`AuthenticationResult`], [`AttestationType`], and [`WebAuthnError`]. `Vec<u8>` fields are encoded as compact byte sequences via [`serde_bytes`](https://docs.rs/serde_bytes) rather than arrays of integers. Enable with `features = ["serde"]` in `Cargo.toml`. |
+//!
+//! Note: `serde` and `serde_json` are unconditional dependencies used internally
+//! for `clientDataJSON` parsing. The `serde` feature only controls whether the
+//! public-facing types implement `Serialize`/`Deserialize`.
+//!
 //! ## Spec references
 //!
 //! - [W3C WebAuthn Level 2](https://www.w3.org/TR/webauthn-2/)
