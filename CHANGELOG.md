@@ -7,6 +7,10 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+---
+
+## [0.5.0] — 2026-06-28
+
 ### Added
 
 - **`serde` feature flag** — opt-in `Serialize` + `Deserialize` derives on all
@@ -159,6 +163,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - **End-to-end demo** — `examples/demo.rs` exercises ES256 + RS256 registration, authentication,
   and replay attack rejection entirely in software
 
+[0.5.0]: https://github.com/ivanxie/caden-rs/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/ivanxie/caden-rs/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/ivanxie/caden-rs/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/ivanxie/caden-rs/compare/v0.1.0...v0.2.0
