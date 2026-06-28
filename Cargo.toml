@@ -16,6 +16,13 @@ documentation = "https://docs.rs/caden"
 # `use webauthn::...` while the crates.io package name is `webauthn-rs-demo`.
 name = "webauthn"
 
+[features]
+# Enable Serialize + Deserialize derives on all public types (Credential,
+# PublicKey, Challenge, RegistrationResult, AuthenticationResult,
+# AttestationType, WebAuthnError). Vec<u8> fields are encoded as compact byte
+# sequences via serde_bytes rather than sequences of u8 integers.
+serde = ["dep:serde_bytes"]
+
 [dependencies]
 # Cryptography: ECDSA P-256, SHA-256, secure random
 ring = "0.17"
@@ -23,9 +30,12 @@ ring = "0.17"
 # CBOR: authenticator data and attestation objects are CBOR-encoded
 ciborium = "0.2"
 
-# JSON + serde: client data JSON parsing
+# JSON + serde: client data JSON parsing (always required; not optional)
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+# Efficient byte-array serialization for Vec<u8> fields (optional)
+serde_bytes = { version = "0.11", optional = true }
 
 # Base64URL encoding used throughout WebAuthn wire format
 base64 = "0.22"
