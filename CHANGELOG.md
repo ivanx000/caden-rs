@@ -5,6 +5,48 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] — 2026-06-27
+
+### Added
+
+- **Cross-origin rejection** (`RelyingParty::reject_cross_origin`) — new opt-in
+  policy (default `false`). When enabled, `verify_registration` and
+  `verify_authentication` return `WebAuthnError::CrossOriginNotAllowed` for any
+  response whose `clientDataJSON` contains `crossOrigin: true` (§7.1 step 10 /
+  §7.2 step 12). Use when your RP never embeds WebAuthn in a cross-origin
+  iframe.
+
+- **Algorithm allowlist** (`RelyingParty::allowed_algorithms`) — new opt-in
+  builder method. When the list is non-empty, `verify_registration` returns
+  `WebAuthnError::UnsupportedAlgorithm` for any credential algorithm not in
+  the list (§7.1 step 17). An empty list (the default) accepts all three
+  supported algorithms (ES256, EdDSA, RS256). Accepts any `IntoIterator<Item =
+  i64>`, e.g. `.allowed_algorithms([COSE_ES256])`.
+
+- **BE / BS flag support** (W3C WebAuthn §6.1) — `AuthenticatorFlags` now
+  parses the Backup Eligibility (BE, bit 3) and Backup State (BS, bit 4) flags.
+  The §6.1 invariant (BS requires BE) is enforced at parse time; a BS-without-BE
+  combination returns `WebAuthnError::InvalidAuthenticatorData`. Both flags are
+  exposed on `RegistrationResult` and `AuthenticationResult`.
+
+- **Backup Eligibility policies** — two new opt-in `RelyingParty` policies
+  enforced at both ceremonies (§7.1 step 18 / §7.2 step 21):
+  - `require_backup_eligible(true)` — rejects credentials with BE=false
+    (`WebAuthnError::BackupEligibilityRequired`). Use for consumer passkey
+    deployments that rely on platform sync (iCloud Keychain, Google Password
+    Manager).
+  - `reject_backup_eligible(true)` — rejects credentials with BE=true
+    (`WebAuthnError::BackupEligibleNotAllowed`). Use for high-security
+    environments that require hardware-bound, non-syncable keys.
+
+- **BE immutability enforcement** — `Credential` now stores `backup_eligible`
+  (populated at §7.1 step 25). `verify_authentication` checks that the BE flag
+  in the authenticator data matches the stored value; a mismatch returns
+  `WebAuthnError::BackupEligibilityChanged`. BE is immutable per spec — a
+  changed value indicates a possible credential substitution attack.
+
+---
+
 ## [0.3.0] — 2026-06-24
 
 ### Added
@@ -102,6 +144,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - **End-to-end demo** — `examples/demo.rs` exercises ES256 + RS256 registration, authentication,
   and replay attack rejection entirely in software
 
+[0.4.0]: https://github.com/ivanxie/caden-rs/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/ivanxie/caden-rs/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/ivanxie/caden-rs/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/ivanxie/caden-rs/releases/tag/v0.1.0
