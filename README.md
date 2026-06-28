@@ -56,6 +56,7 @@ worthless without private keys), and password reuse (each site gets a unique key
 | `#![forbid(unsafe_code)]` | ✅ Enforced at compile time |
 | No-panic guarantee on adversarial input | ✅ `#![deny(clippy::unwrap_used)]` |
 | Fixed test vectors (registration + authentication) | ✅ Implemented |
+| `serde` feature — Serialize/Deserialize on public types | ✅ Opt-in via `features = ["serde"]` |
 | TPM attestation | ❌ Not implemented |
 | Token binding | ❌ Not implemented |
 | FIDO Metadata Service (MDS) lookup | ❌ Not implemented |
@@ -170,7 +171,8 @@ curl -s -X POST http://localhost:3000/authenticate/begin \
 ## Running tests
 
 ```bash
-cargo test                        # all 182+ unit + integration + doc tests
+cargo test                        # all 209+ unit + integration + doc tests
+cargo test --features serde       # +5 serde round-trip tests
 cargo clippy -- -D warnings       # lint (zero-warning policy)
 cargo fmt --check                 # formatting
 cargo doc --no-deps               # API docs (zero warnings)
@@ -262,7 +264,8 @@ boundary.
 |-------|---------|
 | `ring` 0.17 | ECDSA P-256 + RSA PKCS#1 v1.5 signature verification, SHA-256, CSPRNG |
 | `ciborium` 0.2 | CBOR decoding for authenticator data and attestation objects |
-| `serde` + `serde_json` 1 | `clientDataJSON` parsing |
+| `serde` + `serde_json` 1 | `clientDataJSON` parsing (always required) |
+| `serde_bytes` 0.11 | Efficient `Vec<u8>` serialization (optional, enabled by `features = ["serde"]`) |
 | `base64` 0.22 | URL-safe base64 encoding/decoding |
 | `thiserror` 1 | Structured, descriptive error types |
 
