@@ -131,6 +131,13 @@ fn verify_authentication_inner(
         return Err(WebAuthnError::BackupEligibilityRequired);
     }
 
+    // ── §7.2 step 21 — Backup Eligibility consistency ─────────────────────────
+    // BE is immutable per spec — a mismatch between the stored registration value
+    // and the current assertion signals a credential substitution attempt.
+    if auth_data.flags.backup_eligible != stored_credential.backup_eligible {
+        return Err(WebAuthnError::BackupEligibilityChanged);
+    }
+
     // ── §7.2 step 24 ─────────────────────────────────────────────────────────
     // Verify the signature over: authData || SHA-256(clientDataJSON).
     //

@@ -100,5 +100,6 @@ pub fn build_credential_from_auth_vector(v: &AuthenticationVector) -> Credential
         user_id: b"vector-user".to_vec(),
         rp_id: v.rp_id.clone(),
         created_at: SystemTime::now(),
+        backup_eligible: false,
     }
 }

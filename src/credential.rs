@@ -86,6 +86,16 @@ pub struct Credential {
 
     /// When this credential was first registered.
     pub created_at: SystemTime,
+
+    /// Whether this credential is eligible for backup to a platform sync
+    /// service (BE flag, §6.1 bit 3).
+    ///
+    /// This value is immutable per spec — the authenticator sets it once at
+    /// registration and it must not change in subsequent ceremonies. A change
+    /// in `backup_eligible` between registration and authentication is treated
+    /// as a credential substitution attempt and rejected with
+    /// [`crate::error::WebAuthnError::BackupEligibilityChanged`].
+    pub backup_eligible: bool,
 }
 
 // ─── Wire-format input types ──────────────────────────────────────────────────

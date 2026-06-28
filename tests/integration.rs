@@ -902,6 +902,41 @@ fn authentication_result_exposes_backup_state() {
     assert!(result.backup_state);
 }
 
+#[test]
+fn rejects_backup_eligibility_change_at_authentication() {
+    // Register with BE=false. Authenticate with BE=true.
+    // BE is immutable — the mismatch must be detected and rejected.
+    let rp = RelyingParty::new(RP_ID, ORIGIN, "Test RP");
+    let fixture = Fixture::new();
+
+    let reg_ch = Challenge::new().unwrap();
+    let reg_response = fixture.make_registration_response(
+        &reg_ch.bytes,
+        "webauthn.create",
+        ORIGIN,
+        RP_ID,
+        0x41, // UP + AT — BE not set → backup_eligible: false stored
+        1,
+        "none",
+    );
+    let credential = rp
+        .verify_registration(&reg_ch, &reg_response, b"uid")
+        .unwrap()
+        .credential;
+    assert!(!credential.backup_eligible);
+
+    let auth_ch = Challenge::new().unwrap();
+    // flags 0x09 = UP (0x01) + BE (0x08) — authenticator now claims BE=true
+    let auth_response = fixture.make_auth_response_flags(&auth_ch.bytes, ORIGIN, RP_ID, 2, 0x09);
+    let err = rp
+        .verify_authentication(&credential, &auth_ch, &auth_response)
+        .unwrap_err();
+    assert!(
+        matches!(err, WebAuthnError::BackupEligibilityChanged),
+        "expected BackupEligibilityChanged, got {err:?}"
+    );
+}
+
 // ─── Convenience helpers ──────────────────────────────────────────────────────
 
 fn register_credential(rp: &RelyingParty, fixture: &Fixture) -> webauthn::Credential {
@@ -1799,6 +1834,7 @@ fn no_panic_on_random_authentication_input() {
         user_id: b"u".to_vec(),
         rp_id: RP_ID.to_string(),
         created_at: SystemTime::now(),
+        backup_eligible: false,
     };
 
     let mut state: u64 = 0x1234_5678_9ABC_DEF0;

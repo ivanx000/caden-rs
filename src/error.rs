@@ -111,6 +111,16 @@ pub enum WebAuthnError {
     /// sync (e.g. cross-device sign-in via iCloud Keychain or Google Password Manager).
     #[error("Credential is not backup-eligible but this relying party requires backup-eligible credentials")]
     BackupEligibilityRequired,
+
+    /// The Backup Eligibility (BE) flag in the authenticator data differs from
+    /// the value recorded at registration time.
+    ///
+    /// BE is immutable per spec — a mismatch indicates a possible credential
+    /// substitution attack (a different authenticator presenting the same credential ID).
+    #[error(
+        "Backup Eligibility flag changed since registration — credential may have been substituted"
+    )]
+    BackupEligibilityChanged,
 }
 
 /// Convenience alias so callers write `webauthn::Result<T>`.
