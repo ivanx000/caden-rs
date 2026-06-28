@@ -10,8 +10,9 @@ use crate::error::{Result, WebAuthnError};
 
 /// The public key extracted from a COSE key structure during registration.
 ///
-/// Three algorithms are supported:
+/// Four algorithms are supported:
 /// - **ES256** — ECDSA P-256 with SHA-256 (COSE alg `-7`). Most common.
+/// - **ES384** — ECDSA P-384 with SHA-384 (COSE alg `-35`).
 /// - **EdDSA** — Ed25519 (COSE alg `-8`). Used by newer FIDO2 authenticators.
 /// - **RS256** — RSA PKCS#1 v1.5 with SHA-256 (COSE alg `-257`). Used by
 ///   older YubiKey 4-series devices and Windows Hello.
@@ -24,6 +25,18 @@ pub enum PublicKey {
     /// To obtain the 65-byte uncompressed point for ring, prepend `0x04`:
     /// `0x04 || x (32 bytes) || y (32 bytes)`.
     ES256 {
+        #[cfg_attr(feature = "serde", serde(with = "serde_bytes"))]
+        x: Vec<u8>,
+        #[cfg_attr(feature = "serde", serde(with = "serde_bytes"))]
+        y: Vec<u8>,
+    },
+
+    /// P-384 ECDSA public key (COSE alg `-35`, kty `2`).
+    ///
+    /// `x` and `y` are the 48-byte affine coordinates of the public point.
+    /// To obtain the 97-byte uncompressed point for ring, prepend `0x04`:
+    /// `0x04 || x (48 bytes) || y (48 bytes)`.
+    ES384 {
         #[cfg_attr(feature = "serde", serde(with = "serde_bytes"))]
         x: Vec<u8>,
         #[cfg_attr(feature = "serde", serde(with = "serde_bytes"))]
@@ -53,6 +66,7 @@ impl PublicKey {
     pub fn algorithm(&self) -> i64 {
         match self {
             PublicKey::ES256 { .. } => crate::algorithm::COSE_ES256,
+            PublicKey::ES384 { .. } => crate::algorithm::COSE_ES384,
             PublicKey::EdDSA(_) => crate::algorithm::COSE_EDDSA,
             PublicKey::RS256 { .. } => crate::algorithm::COSE_RS256,
         }
@@ -62,6 +76,7 @@ impl PublicKey {
     pub fn key_type(&self) -> &'static str {
         match self {
             PublicKey::ES256 { .. } => "EC2 P-256",
+            PublicKey::ES384 { .. } => "EC2 P-384",
             PublicKey::EdDSA(_) => "OKP Ed25519",
             PublicKey::RS256 { .. } => "RSA 2048",
         }

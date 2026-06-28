@@ -7,17 +7,22 @@
 //! Run with: `cargo run --example demo`
 //!
 //! The demo exercises:
-//! 1. ES256 Registration  — generate P-256 keypair, build authenticator data, verify
+//! 1. ES256 Registration   — generate P-256 keypair, build authenticator data, verify
 //! 2. ES256 Authentication — sign a challenge, verify signature and sign count
 //! 3. ES256 Replay attack  — demonstrate that reusing a sign count is rejected
-//! 4. RS256 Registration  — simulate RSA authenticator, verify RSA public key
+//! 4. RS256 Registration   — simulate RSA authenticator, verify RSA public key
 //! 5. RS256 Authentication — sign with RSA PKCS#1 v1.5, verify RS256 signature
 //! 6. RS256 Replay attack  — demonstrate that replay is rejected for RS256 too
+//! 7. ES384 Registration   — generate P-384 keypair, build authenticator data, verify
+//! 8. ES384 Authentication — sign a challenge, verify ES384 signature and sign count
+//! 9. ES384 Replay attack  — demonstrate that replay is rejected for ES384 too
 
 use anyhow::{Context, Result};
 use ciborium::value::Value;
 use ring::rand::SystemRandom;
-use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_ASN1_SIGNING};
+use ring::signature::{
+    EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_ASN1_SIGNING, ECDSA_P384_SHA384_ASN1_SIGNING,
+};
 
 use webauthn::{
     AuthenticatorAssertionResponse, AuthenticatorAttestationResponse, Challenge, RelyingParty,
@@ -309,6 +314,100 @@ fn main() -> Result<()> {
         Err(e) => return Err(e.into()),
     }
 
+    // ── ES384: Step 8: Registration ceremony ─────────────────────────────────
+    println!("\n[ES384 Registration]");
+
+    let p384_pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P384_SHA384_ASN1_SIGNING, &rng)
+        .map_err(|e| anyhow::anyhow!("failed to generate P-384 PKCS8 keypair: {e}"))?;
+    let p384_key_pair =
+        EcdsaKeyPair::from_pkcs8(&ECDSA_P384_SHA384_ASN1_SIGNING, p384_pkcs8.as_ref(), &rng)
+            .map_err(|e| anyhow::anyhow!("failed to load P-384 key pair: {e}"))?;
+
+    let p384_public_key_bytes = p384_key_pair.public_key().as_ref().to_vec(); // 97 bytes
+
+    let mut p384_cred_id = vec![0u8; 16];
+    ring::rand::SecureRandom::fill(&rng, &mut p384_cred_id)
+        .map_err(|e| anyhow::anyhow!("failed to generate ES384 credential ID: {e}"))?;
+
+    let p384_reg_challenge = Challenge::new().context("failed to generate ES384 challenge")?;
+    let p384_client_data_json =
+        make_client_data_json_bytes("webauthn.create", &p384_reg_challenge.bytes, ORIGIN);
+    let p384_cose_key = encode_es384_cose_key(&p384_public_key_bytes);
+    let p384_reg_auth_data =
+        make_authenticator_data(RP_ID, 0x41, 0, Some((&p384_cred_id, &p384_cose_key)));
+    let p384_att_obj = make_attestation_object(&p384_reg_auth_data);
+
+    let p384_reg_response = AuthenticatorAttestationResponse {
+        client_data_json: p384_client_data_json,
+        attestation_object: p384_att_obj,
+    };
+
+    let p384_reg_result = rp
+        .verify_registration(&p384_reg_challenge, &p384_reg_response, USER_ID)
+        .context("ES384 registration verification failed")?;
+
+    let p384_cred_id_hex: String = p384_reg_result
+        .credential
+        .id
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+
+    println!("  Registration successful");
+    println!("  Credential ID: {p384_cred_id_hex}");
+    println!("  Algorithm:     ES384");
+    println!("  Sign count:    {}", p384_reg_result.credential.sign_count);
+
+    let mut stored_es384 = p384_reg_result.credential;
+
+    // ── ES384: Step 9: Authentication ceremony ────────────────────────────────
+    println!("\n[ES384 Authentication]");
+
+    let p384_auth_challenge = Challenge::new().context("failed to generate challenge")?;
+    let p384_auth_response = make_es384_auth_response(
+        &p384_key_pair,
+        &rng,
+        &p384_auth_challenge.bytes,
+        RP_ID,
+        ORIGIN,
+        1,
+    )?;
+
+    let p384_auth_result = rp
+        .verify_authentication(&stored_es384, &p384_auth_challenge, &p384_auth_response)
+        .context("ES384 authentication failed")?;
+
+    println!("  Authentication successful");
+    println!(
+        "  Sign count:    {} → updated to {}",
+        stored_es384.sign_count, p384_auth_result.new_sign_count
+    );
+    println!("  User present:  {}", p384_auth_result.user_present);
+
+    stored_es384.sign_count = p384_auth_result.new_sign_count;
+
+    // ── ES384: Step 10: Replay attack demonstration ───────────────────────────
+    println!("\n[ES384 Replay Attack Prevention]");
+
+    let p384_replay_challenge = Challenge::new().context("failed to generate challenge")?;
+    let p384_replay_response = make_es384_auth_response(
+        &p384_key_pair,
+        &rng,
+        &p384_replay_challenge.bytes,
+        RP_ID,
+        ORIGIN,
+        1, // same sign count — replay
+    )?;
+
+    match rp.verify_authentication(&stored_es384, &p384_replay_challenge, &p384_replay_response) {
+        Err(webauthn::WebAuthnError::SignCountInvalid { stored, received }) => {
+            println!("  Replay attack correctly rejected");
+            println!("  Error: Sign count invalid: stored {stored}, received {received}");
+        }
+        Ok(_) => panic!("BUG: ES384 replay attack should have been rejected!"),
+        Err(e) => return Err(e.into()),
+    }
+
     println!("\n─────────────────────────────────────");
     println!("All checks passed.");
     Ok(())
@@ -440,6 +539,28 @@ fn extract_rsa_components(der: &[u8]) -> (Vec<u8>, Vec<u8>) {
     (n, e)
 }
 
+fn encode_es384_cose_key(uncompressed_point: &[u8]) -> Vec<u8> {
+    assert_eq!(
+        uncompressed_point.len(),
+        97,
+        "expected 0x04 || x(48) || y(48)"
+    );
+    let x = uncompressed_point[1..49].to_vec();
+    let y = uncompressed_point[49..97].to_vec();
+
+    let cose_key = Value::Map(vec![
+        (Value::Integer(1i64.into()), Value::Integer(2i64.into())), // kty: EC2
+        (Value::Integer(3i64.into()), Value::Integer((-35i64).into())), // alg: ES384
+        (Value::Integer((-1i64).into()), Value::Integer(2i64.into())), // crv: P-384
+        (Value::Integer((-2i64).into()), Value::Bytes(x)),          // x
+        (Value::Integer((-3i64).into()), Value::Bytes(y)),          // y
+    ]);
+
+    let mut buf = Vec::new();
+    ciborium::into_writer(&cose_key, &mut buf).expect("CBOR encoding should not fail");
+    buf
+}
+
 fn make_attestation_object(auth_data: &[u8]) -> Vec<u8> {
     let att_obj = Value::Map(vec![
         (
@@ -476,6 +597,33 @@ fn make_es256_auth_response(
     let sig = key_pair
         .sign(rng, &signed_data)
         .map_err(|e| anyhow::anyhow!("ECDSA signing failed: {e}"))?;
+
+    Ok(AuthenticatorAssertionResponse {
+        client_data_json: client_data_bytes,
+        authenticator_data: auth_data_bytes,
+        signature: sig.as_ref().to_vec(),
+        user_handle: None,
+    })
+}
+
+fn make_es384_auth_response(
+    key_pair: &EcdsaKeyPair,
+    rng: &ring::rand::SystemRandom,
+    challenge: &[u8],
+    rp_id: &str,
+    origin: &str,
+    sign_count: u32,
+) -> Result<AuthenticatorAssertionResponse> {
+    let client_data_bytes = make_client_data_json_bytes("webauthn.get", challenge, origin);
+    let auth_data_bytes = make_authenticator_data(rp_id, 0x01, sign_count, None);
+
+    let client_data_hash = webauthn::crypto::sha256(&client_data_bytes);
+    let mut signed_data = auth_data_bytes.clone();
+    signed_data.extend_from_slice(&client_data_hash);
+
+    let sig = key_pair
+        .sign(rng, &signed_data)
+        .map_err(|e| anyhow::anyhow!("ECDSA P-384 signing failed: {e}"))?;
 
     Ok(AuthenticatorAssertionResponse {
         client_data_json: client_data_bytes,

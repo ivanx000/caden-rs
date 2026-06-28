@@ -62,6 +62,27 @@ pub fn verify_es256(
         .map_err(|_| WebAuthnError::SignatureVerificationFailed)
 }
 
+/// Verify an ES384 (ECDSA P-384 + SHA-384) signature.
+///
+/// # Arguments
+/// * `public_key_uncompressed` — 97-byte uncompressed P-384 point:
+///   `0x04 || x (48 bytes) || y (48 bytes)`.
+/// * `message`   — The raw message that was signed (ring hashes internally via SHA-384).
+/// * `signature` — DER-encoded ASN.1 ECDSA signature, as produced by authenticators.
+///
+/// # Errors
+/// Returns [`WebAuthnError::SignatureVerificationFailed`] if the signature is
+/// invalid, the key is malformed, or the public key does not match.
+pub fn verify_es384(
+    public_key_uncompressed: &[u8],
+    message: &[u8],
+    signature: &[u8],
+) -> Result<()> {
+    let key = UnparsedPublicKey::new(&signature::ECDSA_P384_SHA384_ASN1, public_key_uncompressed);
+    key.verify(message, signature)
+        .map_err(|_| WebAuthnError::SignatureVerificationFailed)
+}
+
 /// Verify an EdDSA (Ed25519) signature.
 ///
 /// # Arguments

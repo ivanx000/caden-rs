@@ -71,11 +71,11 @@
 //! | Algorithm | COSE ID | Description |
 //! |-----------|---------|-------------|
 //! | ES256     | `-7`    | ECDSA P-256 with SHA-256 — recommended, most common |
+//! | ES384     | `-35`   | ECDSA P-384 with SHA-384 |
 //! | EdDSA     | `-8`    | Ed25519 — newer FIDO2 authenticators |
 //! | RS256     | `-257`  | RSA PKCS#1 v1.5 with SHA-256 — legacy YubiKey 4, Windows Hello |
 //!
-//! ES384 is not supported. See the
-//! [COSE algorithm registry](https://www.iana.org/assignments/cose/cose.xhtml)
+//! See the [COSE algorithm registry](https://www.iana.org/assignments/cose/cose.xhtml)
 //! for the full list of identifiers.
 //!
 //! ## Security properties
@@ -127,7 +127,7 @@ mod registration;
 
 // ─── Public re-exports ────────────────────────────────────────────────────────
 
-pub use algorithm::{COSE_EDDSA, COSE_ES256, COSE_RS256};
+pub use algorithm::{COSE_EDDSA, COSE_ES256, COSE_ES384, COSE_RS256};
 pub use authentication::AuthenticatorAssertionResponse;
 pub use challenge::{is_expired, is_expired_with_max_age, CHALLENGE_MAX_AGE_SECS};
 pub use credential::{

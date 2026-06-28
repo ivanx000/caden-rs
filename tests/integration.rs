@@ -1782,6 +1782,182 @@ fn eddsa_rejects_signature_over_wrong_message() {
     assert!(matches!(err, WebAuthnError::SignatureVerificationFailed));
 }
 
+// ─── ES384 (ECDSA P-384 SHA-384) tests ───────────────────────────────────────
+
+struct Es384Fixture {
+    rng: ring::rand::SystemRandom,
+    key_pair: ring::signature::EcdsaKeyPair,
+    cred_id: Vec<u8>,
+    public_key_bytes: Vec<u8>, // 97-byte uncompressed P-384 point
+}
+
+impl Es384Fixture {
+    fn new() -> Self {
+        use ring::signature::{EcdsaKeyPair, ECDSA_P384_SHA384_ASN1_SIGNING};
+        let rng = ring::rand::SystemRandom::new();
+        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P384_SHA384_ASN1_SIGNING, &rng).unwrap();
+        let key_pair =
+            EcdsaKeyPair::from_pkcs8(&ECDSA_P384_SHA384_ASN1_SIGNING, pkcs8.as_ref(), &rng)
+                .unwrap();
+        let public_key_bytes = key_pair.public_key().as_ref().to_vec();
+        Self {
+            rng,
+            key_pair,
+            cred_id: vec![0xCDu8; 16],
+            public_key_bytes,
+        }
+    }
+
+    fn make_registration_response(
+        &self,
+        challenge: &[u8],
+        origin: &str,
+        rp_id: &str,
+        flags: u8,
+        sign_count: u32,
+    ) -> AuthenticatorAttestationResponse {
+        let client_data_json = make_client_data_json_bytes("webauthn.create", challenge, origin);
+        let cose_key = encode_es384_cose_key(&self.public_key_bytes);
+        let auth_data =
+            make_authenticator_data_raw(rp_id, flags, sign_count, Some((&self.cred_id, &cose_key)));
+        let att_obj = make_attestation_object(&auth_data, "none");
+        AuthenticatorAttestationResponse {
+            client_data_json,
+            attestation_object: att_obj,
+        }
+    }
+
+    fn make_auth_response(
+        &self,
+        challenge: &[u8],
+        origin: &str,
+        rp_id: &str,
+        sign_count: u32,
+    ) -> AuthenticatorAssertionResponse {
+        let client_data_bytes = make_client_data_json_bytes("webauthn.get", challenge, origin);
+        let auth_data = make_authenticator_data_raw(rp_id, 0x01, sign_count, None);
+        let client_data_hash = webauthn::crypto::sha256(&client_data_bytes);
+        let mut signed_data = auth_data.clone();
+        signed_data.extend_from_slice(&client_data_hash);
+        let sig = self.key_pair.sign(&self.rng, &signed_data).unwrap();
+        AuthenticatorAssertionResponse {
+            client_data_json: client_data_bytes,
+            authenticator_data: auth_data,
+            signature: sig.as_ref().to_vec(),
+            user_handle: None,
+        }
+    }
+}
+
+fn encode_es384_cose_key(uncompressed_point: &[u8]) -> Vec<u8> {
+    // P-384 uncompressed point: 0x04 || x (48 bytes) || y (48 bytes) = 97 bytes total.
+    assert_eq!(
+        uncompressed_point.len(),
+        97,
+        "expected 0x04 || x(48) || y(48)"
+    );
+    let x = uncompressed_point[1..49].to_vec();
+    let y = uncompressed_point[49..97].to_vec();
+    let cose = Value::Map(vec![
+        (Value::Integer(1i64.into()), Value::Integer(2i64.into())), // kty: EC2
+        (Value::Integer(3i64.into()), Value::Integer((-35i64).into())), // alg: ES384
+        (Value::Integer((-1i64).into()), Value::Integer(2i64.into())), // crv: P-384
+        (Value::Integer((-2i64).into()), Value::Bytes(x)),          // x
+        (Value::Integer((-3i64).into()), Value::Bytes(y)),          // y
+    ]);
+    let mut buf = Vec::new();
+    ciborium::into_writer(&cose, &mut buf).unwrap();
+    buf
+}
+
+#[test]
+fn es384_full_registration_and_authentication_flow() {
+    let rp = RelyingParty::new(RP_ID, ORIGIN, "Test RP");
+    let fixture = Es384Fixture::new();
+
+    // Registration
+    let reg_challenge = Challenge::new().unwrap();
+    let response = fixture.make_registration_response(&reg_challenge.bytes, ORIGIN, RP_ID, 0x41, 0);
+    let reg_result = rp
+        .verify_registration(&reg_challenge, &response, b"es384-user")
+        .expect("ES384 registration should succeed");
+
+    assert_eq!(reg_result.credential.sign_count, 0);
+    assert_eq!(reg_result.credential.rp_id, RP_ID);
+    assert!(matches!(
+        reg_result.credential.public_key,
+        webauthn::PublicKey::ES384 { .. }
+    ));
+
+    // Authentication
+    let mut credential = reg_result.credential;
+    let auth_challenge = Challenge::new().unwrap();
+    let auth_response = fixture.make_auth_response(&auth_challenge.bytes, ORIGIN, RP_ID, 1);
+    let auth_result = rp
+        .verify_authentication(&credential, &auth_challenge, &auth_response)
+        .expect("ES384 authentication should succeed");
+
+    assert_eq!(auth_result.new_sign_count, 1);
+    assert!(auth_result.user_present);
+    credential.sign_count = auth_result.new_sign_count;
+    assert_eq!(credential.sign_count, 1);
+}
+
+#[test]
+fn es384_rejects_tampered_signature() {
+    let rp = RelyingParty::new(RP_ID, ORIGIN, "Test RP");
+    let fixture = Es384Fixture::new();
+
+    let reg_challenge = Challenge::new().unwrap();
+    let response = fixture.make_registration_response(&reg_challenge.bytes, ORIGIN, RP_ID, 0x41, 0);
+    let credential = rp
+        .verify_registration(&reg_challenge, &response, b"uid")
+        .unwrap()
+        .credential;
+
+    let ch = Challenge::new().unwrap();
+    let mut auth_response = fixture.make_auth_response(&ch.bytes, ORIGIN, RP_ID, 1);
+    auth_response.signature[10] ^= 0xFF;
+
+    let err = rp
+        .verify_authentication(&credential, &ch, &auth_response)
+        .unwrap_err();
+    assert!(matches!(err, WebAuthnError::SignatureVerificationFailed));
+}
+
+#[test]
+fn es384_rejects_replay_attack() {
+    let rp = RelyingParty::new(RP_ID, ORIGIN, "Test RP");
+    let fixture = Es384Fixture::new();
+
+    let reg_challenge = Challenge::new().unwrap();
+    let response = fixture.make_registration_response(&reg_challenge.bytes, ORIGIN, RP_ID, 0x41, 0);
+    let mut credential = rp
+        .verify_registration(&reg_challenge, &response, b"uid")
+        .unwrap()
+        .credential;
+
+    let ch1 = Challenge::new().unwrap();
+    let r1 = fixture.make_auth_response(&ch1.bytes, ORIGIN, RP_ID, 1);
+    credential.sign_count = rp
+        .verify_authentication(&credential, &ch1, &r1)
+        .unwrap()
+        .new_sign_count;
+
+    let ch2 = Challenge::new().unwrap();
+    let r2 = fixture.make_auth_response(&ch2.bytes, ORIGIN, RP_ID, 1);
+    let err = rp
+        .verify_authentication(&credential, &ch2, &r2)
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        WebAuthnError::SignCountInvalid {
+            stored: 1,
+            received: 1
+        }
+    ));
+}
+
 // ─── No-panic fuzz tests ──────────────────────────────────────────────────────
 
 #[test]

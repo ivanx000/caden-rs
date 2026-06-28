@@ -19,8 +19,9 @@ the server-side verification logic for the two core WebAuthn ceremonies:
   challenge with the stored private key, and the relying party verifies the
   signature and sign count.
 
-Supported algorithms: **ES256** (ECDSA P-256, COSE `-7`), **EdDSA** (Ed25519,
-COSE `-8`), and **RS256** (RSA PKCS#1 v1.5 SHA-256, COSE `-257`).
+Supported algorithms: **ES256** (ECDSA P-256, COSE `-7`), **ES384** (ECDSA P-384,
+COSE `-35`), **EdDSA** (Ed25519, COSE `-8`), and **RS256** (RSA PKCS#1 v1.5
+SHA-256, COSE `-257`).
 
 The library follows the [W3C WebAuthn Level 3 specification](https://www.w3.org/TR/webauthn-3/).
 

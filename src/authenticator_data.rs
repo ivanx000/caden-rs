@@ -24,8 +24,8 @@
 use ciborium::value::Value;
 
 use crate::algorithm::{
-    COSE_CRV_ED25519, COSE_CRV_P256, COSE_EDDSA, COSE_KTY_EC2, COSE_KTY_OKP, COSE_KTY_RSA,
-    COSE_RS256,
+    COSE_CRV_ED25519, COSE_CRV_P256, COSE_CRV_P384, COSE_EDDSA, COSE_ES256, COSE_ES384,
+    COSE_KTY_EC2, COSE_KTY_OKP, COSE_KTY_RSA, COSE_RS256,
 };
 use crate::error::{Result, WebAuthnError};
 
@@ -81,15 +81,15 @@ pub struct AuthenticatorFlags {
 /// the registration ceremony validates it against the expected value.
 #[derive(Debug, Clone)]
 pub enum CoseKey {
-    /// EC2 key — typically P-256 with ES256 (alg = -7).
+    /// EC2 key — P-256 with ES256 (alg = -7) or P-384 with ES384 (alg = -35).
     EC2 {
-        /// Algorithm (COSE map key `3`). Value `-7` = ES256.
+        /// Algorithm (COSE map key `3`). `-7` = ES256, `-35` = ES384.
         alg: i64,
-        /// Curve (COSE map key `-1`). Value `1` = P-256.
+        /// Curve (COSE map key `-1`). `1` = P-256, `2` = P-384.
         crv: i64,
-        /// X coordinate (COSE map key `-2`). 32 bytes for P-256.
+        /// X coordinate (COSE map key `-2`). 32 bytes for P-256, 48 bytes for P-384.
         x: Vec<u8>,
-        /// Y coordinate (COSE map key `-3`). 32 bytes for P-256.
+        /// Y coordinate (COSE map key `-3`). 32 bytes for P-256, 48 bytes for P-384.
         y: Vec<u8>,
     },
     /// OKP key — EdDSA with Ed25519 (alg = -8, crv = 6).
@@ -224,9 +224,10 @@ pub fn parse_authenticator_data(data: &[u8]) -> Result<AuthenticatorData> {
 /// Decode a CBOR-encoded COSE_Key and return it as a [`CoseKey`].
 ///
 /// Both EC2 (kty = 2) and RSA (kty = 3) keys are supported.
-/// For EC2: validates crv == 1 (P-256) and that x, y are each 32 bytes.
+/// For EC2: dispatches on `alg` to validate crv and coordinate length —
+///   ES256 (alg = -7) requires crv = 1 and 32-byte x/y coordinates;
+///   ES384 (alg = -35) requires crv = 2 and 48-byte x/y coordinates.
 /// For RSA: validates alg == -257 and that n is at least 256 bytes.
-/// Algorithm validation for EC2 (e.g. checking alg == -7) is the caller's responsibility.
 ///
 /// # Errors
 /// - [`WebAuthnError::CborDecodeError`] — input is not valid CBOR.
@@ -348,21 +349,38 @@ fn parse_ec2_key(
     get_int: &impl Fn(i64) -> Option<i64>,
     get_bytes: &impl Fn(i64) -> Option<Vec<u8>>,
 ) -> Result<CoseKey> {
-    // COSE map key 3 = alg. Caller checks the specific algorithm value.
+    // COSE map key 3 = alg. Dispatch on algorithm to determine expected curve and
+    // coordinate size. Mixing alg and crv (e.g. ES256 with P-384) is rejected.
     let alg = get_int(3).ok_or_else(|| {
         WebAuthnError::InvalidPublicKey("missing required field: alg".to_string())
     })?;
 
-    // COSE map key -1 = crv. crv = 1 means P-256.
+    // COSE map key -1 = crv.
     let crv = get_int(-1).ok_or_else(|| {
         WebAuthnError::InvalidPublicKey("missing required field: crv".to_string())
     })?;
 
-    if crv != COSE_CRV_P256 {
-        return Err(WebAuthnError::InvalidPublicKey(format!(
-            "unsupported curve: {crv} (only P-256 / crv=1 is supported)"
-        )));
-    }
+    let coord_size: usize = match alg {
+        COSE_ES256 => {
+            // ES256 (ECDSA P-256 SHA-256) requires crv=1 (P-256) and 32-byte coordinates.
+            if crv != COSE_CRV_P256 {
+                return Err(WebAuthnError::InvalidPublicKey(format!(
+                    "ES256 requires curve P-256 (crv=1), got {crv}"
+                )));
+            }
+            32
+        }
+        COSE_ES384 => {
+            // ES384 (ECDSA P-384 SHA-384) requires crv=2 (P-384) and 48-byte coordinates.
+            if crv != COSE_CRV_P384 {
+                return Err(WebAuthnError::InvalidPublicKey(format!(
+                    "ES384 requires curve P-384 (crv=2), got {crv}"
+                )));
+            }
+            48
+        }
+        _ => return Err(WebAuthnError::UnsupportedAlgorithm(alg)),
+    };
 
     // COSE map key -2 = x coordinate.
     let x = get_bytes(-2)
@@ -372,15 +390,15 @@ fn parse_ec2_key(
     let y = get_bytes(-3)
         .ok_or_else(|| WebAuthnError::InvalidPublicKey("missing required field: y".to_string()))?;
 
-    if x.len() != 32 {
+    if x.len() != coord_size {
         return Err(WebAuthnError::InvalidPublicKey(format!(
-            "x coordinate must be 32 bytes, got {}",
+            "x coordinate must be {coord_size} bytes, got {}",
             x.len()
         )));
     }
-    if y.len() != 32 {
+    if y.len() != coord_size {
         return Err(WebAuthnError::InvalidPublicKey(format!(
-            "y coordinate must be 32 bytes, got {}",
+            "y coordinate must be {coord_size} bytes, got {}",
             y.len()
         )));
     }
@@ -833,10 +851,54 @@ mod tests {
 
     #[test]
     fn parse_cose_key_rejects_unsupported_crv() {
-        // crv = 2 (P-384) — not supported
+        // alg=-7 (ES256) with crv=2 (P-384) is an alg/curve mismatch — ES256 requires crv=1.
         let cbor = make_cose_key_cbor_with_alg_crv(&[0x01u8; 32], &[0x02u8; 32], -7, 2);
         let err = parse_cose_key(&cbor).unwrap_err();
         assert!(matches!(err, WebAuthnError::InvalidPublicKey(ref m) if m.contains("2")));
+    }
+
+    #[test]
+    fn parse_cose_key_valid_es384() {
+        let x = vec![0x01u8; 48];
+        let y = vec![0x02u8; 48];
+        let cbor = make_cose_key_cbor_with_alg_crv(&x, &y, -35, 2);
+        let key = parse_cose_key(&cbor).unwrap();
+        match key {
+            CoseKey::EC2 {
+                alg,
+                crv,
+                x: kx,
+                y: ky,
+            } => {
+                assert_eq!(alg, -35);
+                assert_eq!(crv, 2);
+                assert_eq!(kx, x);
+                assert_eq!(ky, y);
+            }
+            _ => panic!("expected EC2 key"),
+        }
+    }
+
+    #[test]
+    fn parse_cose_key_es384_rejects_short_x_coordinate() {
+        let cbor = make_cose_key_cbor_with_alg_crv(&[0x01u8; 32], &[0x02u8; 48], -35, 2);
+        let err = parse_cose_key(&cbor).unwrap_err();
+        assert!(matches!(err, WebAuthnError::InvalidPublicKey(ref m) if m.contains("32")));
+    }
+
+    #[test]
+    fn parse_cose_key_es384_rejects_short_y_coordinate() {
+        let cbor = make_cose_key_cbor_with_alg_crv(&[0x01u8; 48], &[0x02u8; 32], -35, 2);
+        let err = parse_cose_key(&cbor).unwrap_err();
+        assert!(matches!(err, WebAuthnError::InvalidPublicKey(ref m) if m.contains("32")));
+    }
+
+    #[test]
+    fn parse_cose_key_es384_rejects_wrong_crv() {
+        // alg=-35 (ES384) with crv=1 (P-256) is an alg/curve mismatch — ES384 requires crv=2.
+        let cbor = make_cose_key_cbor_with_alg_crv(&[0x01u8; 48], &[0x02u8; 48], -35, 1);
+        let err = parse_cose_key(&cbor).unwrap_err();
+        assert!(matches!(err, WebAuthnError::InvalidPublicKey(ref m) if m.contains("1")));
     }
 
     #[test]

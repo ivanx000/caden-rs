@@ -25,8 +25,14 @@ pub const COSE_KTY_EC2: i64 = 2;
 /// COSE key type: RSA.
 pub const COSE_KTY_RSA: i64 = 3;
 
+/// COSE algorithm: ECDSA P-384 with SHA-384. Used by newer FIDO2 authenticators.
+pub const COSE_ES384: i64 = -35;
+
 /// COSE EC2 curve: P-256 (NIST curve secp256r1).
 pub const COSE_CRV_P256: i64 = 1;
+
+/// COSE EC2 curve: P-384 (NIST curve secp384r1).
+pub const COSE_CRV_P384: i64 = 2;
 
 /// COSE OKP curve: Ed25519.
 pub const COSE_CRV_ED25519: i64 = 6;

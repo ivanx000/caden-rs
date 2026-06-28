@@ -14,7 +14,9 @@ use crate::authenticator_data;
 use crate::challenge::CHALLENGE_MAX_AGE_SECS;
 use crate::client_data;
 use crate::credential::{AuthenticationResult, Challenge, Credential, PublicKey};
-use crate::crypto::{rsa_components_to_der, sha256, verify_eddsa, verify_es256, verify_rs256};
+use crate::crypto::{
+    rsa_components_to_der, sha256, verify_eddsa, verify_es256, verify_es384, verify_rs256,
+};
 use crate::error::{Result, WebAuthnError};
 use crate::registration::RelyingParty;
 
@@ -146,6 +148,7 @@ fn verify_authentication_inner(
     let mut signed_data = auth_data.raw.clone();
     signed_data.extend_from_slice(&client_data_hash);
 
+    // §7.2 step 24
     match &stored_credential.public_key {
         PublicKey::ES256 { x, y } => {
             // Reconstruct the 65-byte uncompressed point ring expects.
@@ -154,6 +157,14 @@ fn verify_authentication_inner(
             pk.extend_from_slice(x);
             pk.extend_from_slice(y);
             verify_es256(&pk, &signed_data, &response.signature)?;
+        }
+        PublicKey::ES384 { x, y } => {
+            // Reconstruct the 97-byte uncompressed P-384 point ring expects.
+            let mut pk = Vec::with_capacity(97);
+            pk.push(0x04);
+            pk.extend_from_slice(x);
+            pk.extend_from_slice(y);
+            verify_es384(&pk, &signed_data, &response.signature)?;
         }
         PublicKey::EdDSA(pk) => {
             // Ed25519 signature is raw 64 bytes; ring processes the message directly.
