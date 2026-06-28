@@ -7,6 +7,7 @@ use thiserror::Error;
 
 /// All errors that can be returned by WebAuthn ceremony verification.
 #[derive(Debug, Error)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum WebAuthnError {
     /// The client data JSON could not be decoded or is structurally invalid.
     #[error("Invalid client data: {0}")]
