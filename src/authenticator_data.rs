@@ -19,7 +19,11 @@
 //!               2   credentialIdLength  (big-endian u16)
 //!               *   credentialId
 //!               *   credentialPublicKey (CBOR-encoded COSE_Key)
+//!      *     *   extensions (CBOR map, present iff ED flag is set)
 //! ```
+
+use std::collections::HashMap;
+use std::io::Cursor;
 
 use ciborium::value::Value;
 
@@ -150,6 +154,12 @@ pub struct AuthenticatorData {
     /// Present only during registration (when the AT flag is set).
     pub attested_credential_data: Option<AttestedCredentialData>,
 
+    /// Extension data from the authenticator (§6.1 / §10.5), present when the ED flag is set.
+    ///
+    /// Keys are extension identifiers (e.g. `"credProps"`, `"appid"`); values are raw CBOR.
+    /// Unknown extensions are stored as-is — the library never rejects an unrecognised key.
+    pub extensions: Option<HashMap<String, Value>>,
+
     /// The original raw bytes of this authenticator data structure.
     ///
     /// Kept because the signed payload for authentication is
@@ -206,8 +216,19 @@ pub fn parse_authenticator_data(data: &[u8]) -> Result<AuthenticatorData> {
     );
 
     // §6.1: Conditionally parse attested credential data.
-    let attested_credential_data = if flags.attested_credential_data {
-        Some(parse_attested_credential_data(&data[37..])?)
+    let (attested_credential_data, at_bytes_consumed) = if flags.attested_credential_data {
+        let (cred_data, n) = parse_attested_credential_data(&data[37..])?;
+        (Some(cred_data), n)
+    } else {
+        (None, 0)
+    };
+
+    // §6.1: Conditionally parse the extensions CBOR map (ED flag = bit 7).
+    // Extensions follow AT data when present, otherwise they start immediately after
+    // the 37-byte fixed header.
+    let extensions = if flags.extension_data {
+        let ext_start = 37 + at_bytes_consumed;
+        Some(parse_extension_map(&data[ext_start..])?)
     } else {
         None
     };
@@ -217,6 +238,7 @@ pub fn parse_authenticator_data(data: &[u8]) -> Result<AuthenticatorData> {
         flags,
         sign_count,
         attested_credential_data,
+        extensions,
         raw: data.to_vec(),
     })
 }
@@ -444,7 +466,9 @@ fn parse_rsa_key(
     Ok(CoseKey::RSA { alg, n, e })
 }
 
-fn parse_attested_credential_data(data: &[u8]) -> Result<AttestedCredentialData> {
+/// Returns `(AttestedCredentialData, bytes_consumed)` where `bytes_consumed` is the number of
+/// bytes read from `data`. Used by the caller to locate the extension map that may follow.
+fn parse_attested_credential_data(data: &[u8]) -> Result<(AttestedCredentialData, usize)> {
     // Need at least: 16 (aaguid) + 2 (credentialIdLength) = 18 bytes.
     if data.len() < 18 {
         return Err(WebAuthnError::InvalidAuthenticatorData(format!(
@@ -502,9 +526,9 @@ fn parse_attested_credential_data(data: &[u8]) -> Result<AttestedCredentialData>
         .to_vec();
     offset += cred_id_len;
 
-    // credentialPublicKey: remaining bytes are a CBOR-encoded COSE_Key.
-    // ciborium::from_reader reads exactly one item; any trailing extension data
-    // is not consumed — correct per spec.
+    // credentialPublicKey: a CBOR-encoded COSE_Key that may be followed by extension bytes.
+    // Use a Cursor to determine exactly how many bytes the COSE key occupies so the caller
+    // can locate the extension map that may immediately follow.
     let remaining = data.get(offset..).ok_or_else(|| {
         WebAuthnError::InvalidAuthenticatorData("truncated before public key CBOR".to_string())
     })?;
@@ -515,13 +539,59 @@ fn parse_attested_credential_data(data: &[u8]) -> Result<AttestedCredentialData>
         ));
     }
 
-    let public_key = parse_cose_key(remaining)?;
+    // §6.1: Probe CBOR size with a cursor so we can report bytes_consumed accurately.
+    // parse_cose_key does the real validation; this call is only for the byte count.
+    let mut cursor = Cursor::new(remaining);
+    let _: Value = ciborium::from_reader(&mut cursor)
+        .map_err(|e| WebAuthnError::CborDecodeError(format!("COSE key: {e}")))?;
+    let cbor_len = cursor.position() as usize;
 
-    Ok(AttestedCredentialData {
-        aaguid,
-        credential_id,
-        public_key,
-    })
+    let public_key = parse_cose_key(&remaining[..cbor_len])?;
+
+    Ok((
+        AttestedCredentialData {
+            aaguid,
+            credential_id,
+            public_key,
+        },
+        offset + cbor_len,
+    ))
+}
+
+/// Decode the CBOR extension map from `data` (§6.1 / §10.5).
+///
+/// The extensions section is a CBOR map whose keys are extension identifier strings
+/// (e.g. `"credProps"`, `"appid"`) and whose values are extension-specific CBOR.
+/// Unknown extensions are stored as raw [`Value`] — the library never rejects an
+/// unrecognised extension key.
+fn parse_extension_map(data: &[u8]) -> Result<HashMap<String, Value>> {
+    if data.is_empty() {
+        return Err(WebAuthnError::InvalidAuthenticatorData(
+            "ED flag is set but no extension bytes are present".to_string(),
+        ));
+    }
+
+    let value: Value = ciborium::from_reader(data)
+        .map_err(|e| WebAuthnError::CborDecodeError(format!("extension map: {e}")))?;
+
+    let map = match value {
+        Value::Map(m) => m,
+        _ => {
+            return Err(WebAuthnError::InvalidAuthenticatorData(
+                "extension data must be a CBOR map".to_string(),
+            ))
+        }
+    };
+
+    let mut extensions = HashMap::new();
+    for (k, v) in map {
+        // §10.5: extension identifiers are strings. Non-text keys are skipped silently.
+        if let Value::Text(key) = k {
+            extensions.insert(key, v);
+        }
+    }
+
+    Ok(extensions)
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -735,6 +805,97 @@ mod tests {
         let data = make_auth_data(&[0u8; 32], FLAG_UP | FLAG_AT, 0, Some(&cred_data));
         let err = parse_authenticator_data(&data).unwrap_err();
         assert!(matches!(err, WebAuthnError::InvalidAuthenticatorData(_)));
+    }
+
+    // ── extension parsing (§6.1 / §10.5) ────────────────────────────────────
+
+    fn make_extension_cbor(entries: &[(&str, Value)]) -> Vec<u8> {
+        let map = Value::Map(
+            entries
+                .iter()
+                .map(|(k, v)| (Value::Text(k.to_string()), v.clone()))
+                .collect(),
+        );
+        let mut buf = Vec::new();
+        ciborium::into_writer(&map, &mut buf).unwrap();
+        buf
+    }
+
+    #[test]
+    fn ed_flag_not_set_produces_none_extensions() {
+        let data = make_auth_data(&[0u8; 32], FLAG_UP, 1, None);
+        let parsed = parse_authenticator_data(&data).unwrap();
+        assert!(parsed.extensions.is_none());
+    }
+
+    #[test]
+    fn ed_flag_set_with_valid_map_populates_extensions() {
+        let ext_cbor = make_extension_cbor(&[("appid", Value::Bool(true))]);
+        let mut data = make_auth_data(&[0u8; 32], FLAG_UP | FLAG_ED, 0, None);
+        data.extend_from_slice(&ext_cbor);
+        let parsed = parse_authenticator_data(&data).unwrap();
+        let exts = parsed.extensions.unwrap();
+        assert_eq!(exts.get("appid"), Some(&Value::Bool(true)));
+    }
+
+    #[test]
+    fn ed_flag_set_with_multiple_extensions() {
+        let cred_props = Value::Map(vec![(Value::Text("rk".to_string()), Value::Bool(true))]);
+        let ext_cbor = make_extension_cbor(&[
+            ("credProps", cred_props.clone()),
+            ("appid", Value::Bool(false)),
+        ]);
+        let mut data = make_auth_data(&[0u8; 32], FLAG_UP | FLAG_ED, 0, None);
+        data.extend_from_slice(&ext_cbor);
+        let parsed = parse_authenticator_data(&data).unwrap();
+        let exts = parsed.extensions.unwrap();
+        assert_eq!(exts.get("credProps"), Some(&cred_props));
+        assert_eq!(exts.get("appid"), Some(&Value::Bool(false)));
+    }
+
+    #[test]
+    fn ed_flag_set_with_at_flag_parses_extensions_after_cose_key() {
+        // AT + ED: extensions must appear after the attested credential data (COSE key).
+        let pk_cbor = make_cose_key_cbor(&[0x01u8; 32], &[0x02u8; 32]);
+        let cred_data = make_attested_cred_data(&[0xAAu8; 8], &pk_cbor);
+        let ext_cbor = make_extension_cbor(&[("appid", Value::Bool(true))]);
+        let mut combined = cred_data;
+        combined.extend_from_slice(&ext_cbor);
+        let data = make_auth_data(&[0u8; 32], FLAG_UP | FLAG_AT | FLAG_ED, 0, Some(&combined));
+        let parsed = parse_authenticator_data(&data).unwrap();
+        assert!(parsed.attested_credential_data.is_some());
+        let exts = parsed.extensions.unwrap();
+        assert_eq!(exts.get("appid"), Some(&Value::Bool(true)));
+    }
+
+    #[test]
+    fn ed_flag_set_with_no_bytes_returns_error() {
+        // ED set but buffer ends at the 37-byte fixed header — no extension bytes present.
+        let data = make_auth_data(&[0u8; 32], FLAG_UP | FLAG_ED, 0, None);
+        let err = parse_authenticator_data(&data).unwrap_err();
+        assert!(matches!(err, WebAuthnError::InvalidAuthenticatorData(_)));
+        assert!(err.to_string().contains("ED"));
+    }
+
+    #[test]
+    fn ed_flag_set_with_malformed_cbor_returns_error() {
+        let mut data = make_auth_data(&[0u8; 32], FLAG_UP | FLAG_ED, 0, None);
+        data.extend_from_slice(&[0xFF, 0xFF]); // not valid CBOR
+        let err = parse_authenticator_data(&data).unwrap_err();
+        assert!(matches!(err, WebAuthnError::CborDecodeError(_)));
+    }
+
+    #[test]
+    fn ed_flag_set_with_non_map_cbor_returns_error() {
+        let mut data = make_auth_data(&[0u8; 32], FLAG_UP | FLAG_ED, 0, None);
+        // Encode a CBOR integer instead of a map.
+        let not_a_map = Value::Integer(42i64.into());
+        let mut cbor_buf = Vec::new();
+        ciborium::into_writer(&not_a_map, &mut cbor_buf).unwrap();
+        data.extend_from_slice(&cbor_buf);
+        let err = parse_authenticator_data(&data).unwrap_err();
+        assert!(matches!(err, WebAuthnError::InvalidAuthenticatorData(_)));
+        assert!(err.to_string().contains("map"));
     }
 
     // ── parse_cose_key — EC2 ─────────────────────────────────────────────────

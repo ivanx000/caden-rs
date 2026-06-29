@@ -1,6 +1,9 @@
 //! Core domain types for stored credentials, challenges, and ceremony results.
 
+use std::collections::HashMap;
 use std::time::{Duration, SystemTime};
+
+use ciborium::value::Value;
 
 use ring::rand::{SecureRandom, SystemRandom};
 
@@ -214,6 +217,15 @@ pub struct RegistrationResult {
 
     /// Whether the credential was backed up at the time of registration (BS flag).
     pub backup_state: bool,
+
+    /// Authenticator extension data from registration (§6.1 / §10.5), or `None` if the
+    /// ED flag was not set. Keys are extension identifiers (e.g. `"credProps"`); values
+    /// are raw CBOR that callers inspect themselves.
+    ///
+    /// Excluded from serde serialization: `ciborium::value::Value` has no portable JSON
+    /// encoding. Extract the values you need and convert them before serializing.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub extensions: Option<HashMap<String, Value>>,
 }
 
 /// Successful outcome of an authentication ceremony.
@@ -243,6 +255,15 @@ pub struct AuthenticationResult {
     /// Whether the credential is currently backed up (BS flag).
     /// May change between ceremonies as backup state varies.
     pub backup_state: bool,
+
+    /// Authenticator extension data from authentication (§6.1 / §10.5), or `None` if the
+    /// ED flag was not set. Keys are extension identifiers (e.g. `"appid"`); values are
+    /// raw CBOR that callers inspect themselves.
+    ///
+    /// Excluded from serde serialization: `ciborium::value::Value` has no portable JSON
+    /// encoding. Extract the values you need and convert them before serializing.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub extensions: Option<HashMap<String, Value>>,
 }
 
 /// The level of attestation the authenticator provided.
