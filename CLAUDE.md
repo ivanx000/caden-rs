@@ -547,7 +547,7 @@ added as dev-dependencies.
 - Package name changed to `webauthn-rs-demo` (the `webauthn` name is taken);
   `[lib] name = "webauthn"` keeps the Rust import path unchanged for all existing code.
 - `Cargo.toml` updated with `description`, `keywords`, `categories`, `repository`,
-  `documentation`, `license = "MIT OR Apache-2.0"`, `rust-version = "1.70"`.
+  `documentation`, `license = "MIT OR Apache-2.0"`, `rust-version = "1.85"`.
 - `LICENSE-MIT` and `LICENSE-APACHE` added.
 - `CHANGELOG.md` added.
 - `cargo package --no-verify --allow-dirty` produces zero warnings (46 files, ~89 KiB).
@@ -623,7 +623,7 @@ Three jobs run in parallel:
 | Job | What it runs |
 |-----|-------------|
 | **Build & Test** | `cargo build`, `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test`, `cargo doc --no-deps`, `cargo run --example demo` |
-| **MSRV (1.70)** | `cargo build` + `cargo test` on Rust 1.70 |
+| **MSRV (1.85)** | `cargo build` + `cargo test` on Rust 1.85 |
 | **Security Audit** | `cargo audit` via `cargo-audit` |
 
 ### Always run `cargo fmt` before committing
@@ -646,11 +646,11 @@ cargo run --example demo
 
 All six must pass before pushing.
 
-### MSRV — Minimum Supported Rust Version (1.70)
+### MSRV — Minimum Supported Rust Version (1.85)
 
-`rust-version = "1.70"` in `Cargo.toml` declares that the crate compiles on Rust 1.70.
+`rust-version = "1.85"` in `Cargo.toml` declares that the crate compiles on Rust 1.85.
 The MSRV job on CI enforces this by building and testing on that exact toolchain.
-1.70 was chosen because it is the oldest stable release that supports all features used
+1.85 was chosen because it is the oldest stable release that supports all features used
 in this crate (notably `let-else` and `is_some_and`). Bump the MSRV intentionally when
 adopting a newer language feature, and update `Cargo.toml`, `CLAUDE.md`, and the CI job.
 
@@ -675,5 +675,5 @@ If audit fails on CI, check the advisory at `rustsec.org/advisories/<ID>` and ei
 1. Check the failing job in the GitHub Actions tab.
 2. Reproduce locally with the command from the table above.
 3. Fix the issue, run `/check` to confirm all six steps pass, then push.
-4. For MSRV failures: the code uses a feature not available in Rust 1.70 — rewrite to avoid it.
+4. For MSRV failures: the code uses a feature not available in Rust 1.85 — rewrite to avoid it.
 5. For audit failures: upgrade the flagged dependency or open an issue to track it.
