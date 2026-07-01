@@ -650,9 +650,26 @@ All six must pass before pushing.
 
 `rust-version = "1.88"` in `Cargo.toml` declares that the crate compiles on Rust 1.88.
 The MSRV job on CI enforces this by building and testing on that exact toolchain.
-1.88 was chosen because it is the oldest stable release that supports all features used
-in this crate (notably `let-else` and `is_some_and`). Bump the MSRV intentionally when
-adopting a newer language feature, and update `Cargo.toml`, `CLAUDE.md`, and the CI job.
+
+1.88 is set by the dependency tree, not by any language feature this crate uses directly.
+`x509-parser` pulls in `time@0.3.52` (and its sub-crates `time-core`, `time-macros`),
+which declare `rust-version = "1.88"`. This is the pattern to watch for: a transitive
+dependency silently raises the effective MSRV.
+
+**When the MSRV CI job fails** with a message like:
+
+```
+time@0.3.52 requires rustc 1.88.0
+```
+
+The fix is to bump both `rust-version` in `Cargo.toml` and the toolchain in
+`.github/workflows/ci.yml` to the version the error names — no guessing needed.
+Also update the cache key suffix (`cargo-msrv-1.88-…`) to bust the stale cache,
+and update every `1.XX` reference in this file.
+
+**When adding a new dependency**, check its `rust-version` (and its deps') on
+crates.io before committing. The MSRV CI job will catch it if you miss it, but
+reading the error message gives you the exact version to use immediately.
 
 ### cargo-audit — dependency vulnerability scanning
 
@@ -675,5 +692,5 @@ If audit fails on CI, check the advisory at `rustsec.org/advisories/<ID>` and ei
 1. Check the failing job in the GitHub Actions tab.
 2. Reproduce locally with the command from the table above.
 3. Fix the issue, run `/check` to confirm all six steps pass, then push.
-4. For MSRV failures: the code uses a feature not available in Rust 1.88 — rewrite to avoid it.
+4. For MSRV failures: read the error — it names the exact version required (e.g. "requires rustc 1.88.0"). Update `rust-version` in `Cargo.toml`, the toolchain in `ci.yml`, the cache key suffix, and all `1.XX` references in `CLAUDE.md` to match.
 5. For audit failures: upgrade the flagged dependency or open an issue to track it.
