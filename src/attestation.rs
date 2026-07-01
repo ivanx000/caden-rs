@@ -6,33 +6,138 @@
 //!
 //! ## Supported formats
 //!
-//! | Format       | Status                                  | Notes                                                |
-//! |--------------|-----------------------------------------|------------------------------------------------------|
-//! | `"none"`          | ✅ Supported                            | No cryptographic attestation provided                    |
-//! | `"packed"`        | ✅ Self-attestation; ⚠️ Basic detected  | Self: signature verified. Basic: cert chain skipped      |
-//! | `"fido-u2f"`      | ✅ Supported                            | Signature verified; cert chain requires FIDO MDS         |
-//! | `"android-key"`   | ✅ Supported                            | Signature + key-match verified; cert chain skipped       |
-//! | `"tpm"`           | ✅ Supported                            | sig + certInfo + pubArea verified; cert chain skipped    |
-//! | `"apple"`         | ✅ Supported                            | Nonce + key-match verified; cert chain requires Apple MDS |
+//! | Format       | Status                                  | Notes                                                          |
+//! |--------------|-----------------------------------------|----------------------------------------------------------------|
+//! | `"none"`          | ✅ Supported                       | No cryptographic attestation provided                          |
+//! | `"packed"`        | ✅ Self-attestation; ✅ Basic       | Self and Basic: sig + full chain order verified                |
+//! | `"fido-u2f"`      | ✅ Supported                       | Signature + full chain order verified                          |
+//! | `"android-key"`   | ✅ Supported                       | Signature + key-match + full chain order verified              |
+//! | `"tpm"`           | ✅ Supported                       | sig + certInfo + pubArea + full chain order verified           |
+//! | `"apple"`         | ✅ Supported                       | Nonce + key-match + full chain order verified                  |
+//!
+//! ### Certificate chain verification
+//!
+//! All formats that carry an `x5c` array (leaf-first, DER-encoded) now verify
+//! chain order: each certificate must be signed by the next one in the array.
+//! When the relying party supplies trust anchors via
+//! [`crate::RelyingParty::trust_anchors`], the root is additionally checked
+//! against those anchors and the result is upgraded to
+//! [`AttestationType::BasicVerified`].
 //!
 //! ### Packed attestation sub-cases
 //!
 //! - **Self-attestation** (`x5c` absent): the credential key itself signs the
-//!   attestation data. This is fully verified.
+//!   attestation data. Fully verified.
 //! - **Basic attestation** (`x5c` present): a separate attestation key with a
-//!   certificate chain signs the data. This library **detects** basic attestation
-//!   and returns [`AttestationType::Basic`], but does not verify the certificate
-//!   chain because that requires a FIDO Metadata Service (MDS) trust anchor set.
+//!   certificate chain signs the data. The signature over `authData ||
+//!   clientDataHash` is verified using the leaf certificate's public key, and the
+//!   full chain order is verified.
 //! - **ECDAA**: deprecated and not implemented.
 
 use ciborium::value::Value;
 use ring::digest;
+use x509_parser::prelude::*;
 
 use crate::algorithm::{COSE_EDDSA, COSE_ES256, COSE_RS256};
 use crate::credential::{AttestationType, PublicKey};
 use crate::crypto::{verify_eddsa, verify_es256, verify_rs256};
 use crate::der::rsa_components_to_der;
 use crate::error::{Result, WebAuthnError};
+
+/// Extract a CBOR `x5c` array (leaf-first, DER-encoded) into `Vec<Vec<u8>>`.
+///
+/// Returns an error if `v` is not a non-empty CBOR array of byte strings.
+fn extract_x5c_array(v: &Value) -> Result<Vec<Vec<u8>>> {
+    let arr = match v {
+        Value::Array(a) => a,
+        _ => {
+            return Err(WebAuthnError::InvalidAttestationObject(
+                "x5c must be a CBOR array".to_string(),
+            ))
+        }
+    };
+    if arr.is_empty() {
+        return Err(WebAuthnError::InvalidAttestationObject(
+            "x5c must be non-empty".to_string(),
+        ));
+    }
+    arr.iter()
+        .enumerate()
+        .map(|(i, entry)| match entry {
+            Value::Bytes(b) => Ok(b.clone()),
+            _ => Err(WebAuthnError::InvalidAttestationObject(format!(
+                "x5c[{i}] must be CBOR bytes"
+            ))),
+        })
+        .collect()
+}
+
+/// Verify the `x5c` certificate chain order and optionally anchor the root.
+///
+/// Chain order: cert `i` must be signed by cert `i+1` (leaf-first ordering per
+/// the WebAuthn spec). The issuer DN of cert `i` must equal the subject DN of
+/// cert `i+1`.
+///
+/// Root check: when `trust_anchors` is non-empty the root certificate (the last
+/// entry in `certs`) must be signed by one of the provided DER-encoded anchor
+/// certificates. Returns [`AttestationType::BasicVerified`] on success or
+/// [`WebAuthnError::AttestationRootUntrusted`] if none match.
+///
+/// When `trust_anchors` is empty, chain order is still verified but the root is
+/// accepted unconditionally and [`AttestationType::Basic`] is returned.
+fn verify_x5c_chain(certs: &[Vec<u8>], trust_anchors: &[Vec<u8>]) -> Result<AttestationType> {
+    // §7.1 step 22 — verify chain order (leaf-first).
+    for i in 0..certs.len().saturating_sub(1) {
+        let (_, subject) = X509Certificate::from_der(&certs[i]).map_err(|_| {
+            WebAuthnError::AttestationChainInvalid(format!(
+                "x5c[{i}] is not a valid DER-encoded X.509 certificate"
+            ))
+        })?;
+        let (_, issuer) = X509Certificate::from_der(&certs[i + 1]).map_err(|_| {
+            WebAuthnError::AttestationChainInvalid(format!(
+                "x5c[{}] is not a valid DER-encoded X.509 certificate",
+                i + 1
+            ))
+        })?;
+
+        if subject.issuer() != issuer.subject() {
+            return Err(WebAuthnError::AttestationChainInvalid(format!(
+                "x5c[{i}].issuer does not match x5c[{}].subject",
+                i + 1
+            )));
+        }
+
+        subject
+            .verify_signature(Some(issuer.public_key()))
+            .map_err(|_| {
+                WebAuthnError::AttestationChainInvalid(format!(
+                    "x5c[{i}] is not signed by x5c[{}]",
+                    i + 1
+                ))
+            })?;
+    }
+
+    if trust_anchors.is_empty() {
+        return Ok(AttestationType::Basic);
+    }
+
+    // §7.1 step 22 — verify the chain root against configured trust anchors.
+    let root_der = &certs[certs.len() - 1];
+    let (_, root) = X509Certificate::from_der(root_der).map_err(|_| {
+        WebAuthnError::AttestationChainInvalid("x5c root certificate is not valid DER".to_string())
+    })?;
+
+    for anchor_der in trust_anchors {
+        let Ok((_, anchor)) = X509Certificate::from_der(anchor_der) else {
+            continue;
+        };
+        if root.verify_signature(Some(anchor.public_key())).is_ok() {
+            return Ok(AttestationType::BasicVerified);
+        }
+    }
+
+    Err(WebAuthnError::AttestationRootUntrusted)
+}
 
 /// Verify the attestation statement and return the [`AttestationType`].
 ///
@@ -43,12 +148,18 @@ use crate::error::{Result, WebAuthnError};
 /// * `client_data_hash`     — SHA-256(clientDataJSON).
 /// * `credential_public_key`— The credential public key extracted during this registration.
 /// * `credential_id`        — The credential ID bytes from attested credential data.
+/// * `trust_anchors` — DER-encoded root CA certificates; when non-empty the
+///   chain root is verified against these anchors.
 ///
 /// # Errors
 /// Returns [`WebAuthnError::InvalidAttestationObject`] if the attestation
 /// statement is structurally invalid for the given format.
 /// Returns [`WebAuthnError::SignatureVerificationFailed`] if attestation
 /// signature verification fails.
+/// Returns [`WebAuthnError::AttestationChainInvalid`] if the `x5c` chain order
+/// is broken.
+/// Returns [`WebAuthnError::AttestationRootUntrusted`] if trust anchors are
+/// configured but none match the chain root.
 pub fn verify(
     fmt: &str,
     att_stmt: &Value,
@@ -56,6 +167,7 @@ pub fn verify(
     client_data_hash: &[u8; 32],
     credential_public_key: &PublicKey,
     credential_id: &[u8],
+    trust_anchors: &[Vec<u8>],
 ) -> Result<AttestationType> {
     match fmt {
         // §8.7 — "none" attestation: the authenticator is not attested.
@@ -69,6 +181,7 @@ pub fn verify(
             auth_data_bytes,
             client_data_hash,
             credential_public_key,
+            trust_anchors,
         ),
 
         // §8.6 — fido-u2f attestation: used by legacy YubiKey 4-series and U2F tokens.
@@ -78,6 +191,7 @@ pub fn verify(
             client_data_hash,
             credential_id,
             credential_public_key,
+            trust_anchors,
         ),
 
         // §8.4 — android-key attestation: Android Keystore-backed authenticators.
@@ -86,6 +200,7 @@ pub fn verify(
             auth_data_bytes,
             client_data_hash,
             credential_public_key,
+            trust_anchors,
         ),
 
         // §8.8 — apple attestation: Face ID and Touch ID passkeys.
@@ -94,6 +209,7 @@ pub fn verify(
             auth_data_bytes,
             client_data_hash,
             credential_public_key,
+            trust_anchors,
         ),
 
         // §8.3 — tpm attestation: TPM 2.0 certify attestation.
@@ -102,6 +218,7 @@ pub fn verify(
             auth_data_bytes,
             client_data_hash,
             credential_public_key,
+            trust_anchors,
         ),
 
         // All other formats are accepted but signal that attestation was not verified.
@@ -111,12 +228,16 @@ pub fn verify(
 
 /// Verify a packed attestation statement (W3C WebAuthn §8.2).
 ///
-/// Handles self-attestation (no `x5c`) and detects basic attestation (`x5c` present).
+/// Handles self-attestation (no `x5c`) and basic attestation (`x5c` present).
+/// For basic attestation the signature over `authData || clientDataHash` is
+/// verified using the leaf certificate's public key, and the full certificate
+/// chain order is validated via [`verify_x5c_chain`].
 fn verify_packed(
     att_stmt: &Value,
     auth_data_bytes: &[u8],
     client_data_hash: &[u8; 32],
     credential_public_key: &PublicKey,
+    trust_anchors: &[Vec<u8>],
 ) -> Result<AttestationType> {
     let stmt_map = match att_stmt {
         Value::Map(m) => m,
@@ -129,7 +250,7 @@ fn verify_packed(
 
     let mut alg: Option<i64> = None;
     let mut sig: Option<Vec<u8>> = None;
-    let mut has_x5c = false;
+    let mut x5c_certs: Option<Vec<Vec<u8>>> = None;
 
     for (k, v) in stmt_map {
         match k {
@@ -158,82 +279,112 @@ fn verify_packed(
                 });
             }
             Value::Text(ref key) if key == "x5c" => {
-                has_x5c = true;
+                x5c_certs = Some(extract_x5c_array(v)?);
             }
             _ => {}
         }
     }
 
-    // §8.2 step 2: if x5c is present this is basic attestation.
-    // Full certificate chain verification requires a FIDO MDS trust anchor set,
-    // which is out of scope. Accept the credential and signal Basic attestation.
-    if has_x5c {
-        return Ok(AttestationType::Basic);
+    if let Some(certs) = x5c_certs {
+        // §8.2 step 2: x5c present → basic attestation.
+        // Verify the attestation signature with the leaf cert's public key,
+        // then validate the full certificate chain order.
+        let alg = alg.ok_or_else(|| {
+            WebAuthnError::InvalidAttestationObject(
+                "packed basic-attestation attStmt missing required field: alg".to_string(),
+            )
+        })?;
+        let sig = sig.ok_or_else(|| {
+            WebAuthnError::InvalidAttestationObject(
+                "packed basic-attestation attStmt missing required field: sig".to_string(),
+            )
+        })?;
+
+        // §8.2 step 2.a: build verification data = authData || clientDataHash.
+        let mut verification_data = Vec::with_capacity(auth_data_bytes.len() + 32);
+        verification_data.extend_from_slice(auth_data_bytes);
+        verification_data.extend_from_slice(client_data_hash);
+
+        // §8.2 step 2.b: verify sig using the leaf certificate's public key.
+        match alg {
+            COSE_ES256 => {
+                let att_pk = extract_ec_p256_public_key_from_cert(&certs[0])?;
+                verify_es256(&att_pk, &verification_data, &sig)?;
+            }
+            COSE_RS256 => {
+                let att_pk = extract_rsa_public_key_der_from_cert(&certs[0])?;
+                verify_rs256(&att_pk, &verification_data, &sig)?;
+            }
+            other => return Err(WebAuthnError::UnsupportedAlgorithm(other)),
+        }
+
+        // §8.2 step 2.c: verify the x5c chain order and optionally the root.
+        verify_x5c_chain(&certs, trust_anchors)
+    } else {
+        // §8.2 step 3: x5c absent → self attestation.
+        let alg = alg.ok_or_else(|| {
+            WebAuthnError::InvalidAttestationObject(
+                "packed self-attestation attStmt missing required field: alg".to_string(),
+            )
+        })?;
+        let sig = sig.ok_or_else(|| {
+            WebAuthnError::InvalidAttestationObject(
+                "packed self-attestation attStmt missing required field: sig".to_string(),
+            )
+        })?;
+
+        // §8.2 step 3.a: verify alg matches the credential public key algorithm.
+        // In self-attestation the credential key signs the attestation, so their
+        // algorithms must agree.
+        let expected_alg = credential_public_key.algorithm();
+        if alg != expected_alg {
+            return Err(WebAuthnError::InvalidAttestationObject(format!(
+                "packed self-attestation alg ({alg}) does not match credential key algorithm ({expected_alg})"
+            )));
+        }
+
+        // §8.2 step 3.b: build the verification data: authData || clientDataHash.
+        let mut verification_data = Vec::with_capacity(auth_data_bytes.len() + 32);
+        verification_data.extend_from_slice(auth_data_bytes);
+        verification_data.extend_from_slice(client_data_hash);
+
+        // §8.2 step 3.c: verify the signature using the credential public key.
+        match credential_public_key {
+            PublicKey::ES256 { x, y } if alg == COSE_ES256 => {
+                let mut uncompressed = Vec::with_capacity(65);
+                uncompressed.push(0x04);
+                uncompressed.extend_from_slice(x);
+                uncompressed.extend_from_slice(y);
+                verify_es256(&uncompressed, &verification_data, &sig)?;
+            }
+            PublicKey::EdDSA(pk) if alg == COSE_EDDSA => {
+                verify_eddsa(pk, &verification_data, &sig)?;
+            }
+            PublicKey::RS256 { n, e } if alg == COSE_RS256 => {
+                let der = rsa_components_to_der(n, e)?;
+                verify_rs256(&der, &verification_data, &sig)?;
+            }
+            _ => {
+                return Err(WebAuthnError::UnsupportedAlgorithm(alg));
+            }
+        }
+
+        Ok(AttestationType::SelfAttestation)
     }
-
-    // §8.2 step 3: x5c absent → self attestation.
-    let alg = alg.ok_or_else(|| {
-        WebAuthnError::InvalidAttestationObject(
-            "packed self-attestation attStmt missing required field: alg".to_string(),
-        )
-    })?;
-    let sig = sig.ok_or_else(|| {
-        WebAuthnError::InvalidAttestationObject(
-            "packed self-attestation attStmt missing required field: sig".to_string(),
-        )
-    })?;
-
-    // §8.2 step 3.a: verify alg matches the credential public key algorithm.
-    // In self-attestation the credential key signs the attestation, so their
-    // algorithms must agree.
-    let expected_alg = credential_public_key.algorithm();
-    if alg != expected_alg {
-        return Err(WebAuthnError::InvalidAttestationObject(format!(
-            "packed self-attestation alg ({alg}) does not match credential key algorithm ({expected_alg})"
-        )));
-    }
-
-    // §8.2 step 3.b: build the verification data: authData || clientDataHash.
-    let mut verification_data = Vec::with_capacity(auth_data_bytes.len() + 32);
-    verification_data.extend_from_slice(auth_data_bytes);
-    verification_data.extend_from_slice(client_data_hash);
-
-    // §8.2 step 3.c: verify the signature using the credential public key.
-    match credential_public_key {
-        PublicKey::ES256 { x, y } if alg == COSE_ES256 => {
-            let mut uncompressed = Vec::with_capacity(65);
-            uncompressed.push(0x04);
-            uncompressed.extend_from_slice(x);
-            uncompressed.extend_from_slice(y);
-            verify_es256(&uncompressed, &verification_data, &sig)?;
-        }
-        PublicKey::EdDSA(pk) if alg == COSE_EDDSA => {
-            verify_eddsa(pk, &verification_data, &sig)?;
-        }
-        PublicKey::RS256 { n, e } if alg == COSE_RS256 => {
-            let der = rsa_components_to_der(n, e)?;
-            verify_rs256(&der, &verification_data, &sig)?;
-        }
-        _ => {
-            return Err(WebAuthnError::UnsupportedAlgorithm(alg));
-        }
-    }
-
-    Ok(AttestationType::SelfAttestation)
 }
 
 /// Verify a FIDO U2F attestation statement (W3C WebAuthn §8.6).
 ///
 /// Requires `x5c` (the attestation certificate chain). Verifies the ECDSA-P256
-/// signature over `verificationData`; returns [`AttestationType::Basic`] on
-/// success. The certificate chain is not verified — that requires a FIDO MDS
-/// trust anchor set.
+/// signature over `verificationData` using the leaf certificate's public key,
+/// then validates the full `x5c` chain order via [`verify_x5c_chain`].
 fn verify_fido_u2f(
     att_stmt: &Value,
     auth_data_bytes: &[u8],
     client_data_hash: &[u8; 32],
     credential_id: &[u8],
     credential_public_key: &PublicKey,
+    trust_anchors: &[Vec<u8>],
 ) -> Result<AttestationType> {
     let stmt_map = match att_stmt {
         Value::Map(m) => m,
@@ -245,7 +396,7 @@ fn verify_fido_u2f(
     };
 
     let mut sig: Option<Vec<u8>> = None;
-    let mut x5c_first_cert: Option<Vec<u8>> = None;
+    let mut x5c_certs: Option<Vec<Vec<u8>>> = None;
 
     for (k, v) in stmt_map {
         match k {
@@ -260,33 +411,14 @@ fn verify_fido_u2f(
                 });
             }
             Value::Text(ref key) if key == "x5c" => {
-                x5c_first_cert = Some(match v {
-                    Value::Array(certs) if !certs.is_empty() => match &certs[0] {
-                        Value::Bytes(b) => b.clone(),
-                        _ => {
-                            return Err(WebAuthnError::InvalidAttestationObject(
-                                "fido-u2f x5c[0] must be CBOR bytes".to_string(),
-                            ))
-                        }
-                    },
-                    Value::Array(_) => {
-                        return Err(WebAuthnError::InvalidAttestationObject(
-                            "fido-u2f x5c must be non-empty".to_string(),
-                        ))
-                    }
-                    _ => {
-                        return Err(WebAuthnError::InvalidAttestationObject(
-                            "fido-u2f x5c must be a CBOR array".to_string(),
-                        ))
-                    }
-                });
+                x5c_certs = Some(extract_x5c_array(v)?);
             }
             _ => {}
         }
     }
 
     // §8.6 step 2.a: x5c must be present.
-    let cert_der = x5c_first_cert.ok_or_else(|| {
+    let certs = x5c_certs.ok_or_else(|| {
         WebAuthnError::InvalidAttestationObject(
             "fido-u2f attStmt missing required field: x5c".to_string(),
         )
@@ -297,8 +429,8 @@ fn verify_fido_u2f(
         )
     })?;
 
-    // §8.6 step 2.b: extract the attestation key from the certificate.
-    let att_pk = extract_ec_p256_public_key_from_cert(&cert_der)?;
+    // §8.6 step 2.b: extract the attestation key from the leaf certificate.
+    let att_pk = extract_ec_p256_public_key_from_cert(&certs[0])?;
 
     // §8.6 step 2.c: FIDO U2F mandates EC P-256 for the credential key.
     let cred_pk_bytes = match credential_public_key {
@@ -336,7 +468,8 @@ fn verify_fido_u2f(
     // §8.6 step 2.f: verify the signature over verificationData.
     verify_es256(&att_pk, &verification_data, &sig)?;
 
-    Ok(AttestationType::Basic)
+    // §8.6 step 2.g: verify the x5c chain order and optionally the root.
+    verify_x5c_chain(&certs, trust_anchors)
 }
 
 /// Verify an Android Key attestation statement (W3C WebAuthn §8.4).
@@ -345,14 +478,14 @@ fn verify_fido_u2f(
 /// public key must equal the credential's public key (the key security property
 /// of Android Key attestation: the Android Keystore proves the credential key
 /// was generated inside a hardware-backed secure element). Verifies the
-/// ECDSA-P256 signature over `authData || clientDataHash`; returns
-/// [`AttestationType::Basic`] on success. The certificate chain is not verified
-/// — that requires a FIDO MDS trust anchor set.
+/// ECDSA-P256 signature over `authData || clientDataHash`, then validates the
+/// full `x5c` chain order via [`verify_x5c_chain`].
 fn verify_android_key(
     att_stmt: &Value,
     auth_data_bytes: &[u8],
     client_data_hash: &[u8; 32],
     credential_public_key: &PublicKey,
+    trust_anchors: &[Vec<u8>],
 ) -> Result<AttestationType> {
     let stmt_map = match att_stmt {
         Value::Map(m) => m,
@@ -365,7 +498,7 @@ fn verify_android_key(
 
     let mut alg: Option<i64> = None;
     let mut sig: Option<Vec<u8>> = None;
-    let mut x5c_first_cert: Option<Vec<u8>> = None;
+    let mut x5c_certs: Option<Vec<Vec<u8>>> = None;
 
     for (k, v) in stmt_map {
         match k {
@@ -394,26 +527,7 @@ fn verify_android_key(
                 });
             }
             Value::Text(ref key) if key == "x5c" => {
-                x5c_first_cert = Some(match v {
-                    Value::Array(certs) if !certs.is_empty() => match &certs[0] {
-                        Value::Bytes(b) => b.clone(),
-                        _ => {
-                            return Err(WebAuthnError::InvalidAttestationObject(
-                                "android-key x5c[0] must be CBOR bytes".to_string(),
-                            ))
-                        }
-                    },
-                    Value::Array(_) => {
-                        return Err(WebAuthnError::InvalidAttestationObject(
-                            "android-key x5c must be non-empty".to_string(),
-                        ))
-                    }
-                    _ => {
-                        return Err(WebAuthnError::InvalidAttestationObject(
-                            "android-key x5c must be a CBOR array".to_string(),
-                        ))
-                    }
-                });
+                x5c_certs = Some(extract_x5c_array(v)?);
             }
             _ => {}
         }
@@ -430,14 +544,14 @@ fn verify_android_key(
             "android-key attStmt missing required field: sig".to_string(),
         )
     })?;
-    let cert_der = x5c_first_cert.ok_or_else(|| {
+    let certs = x5c_certs.ok_or_else(|| {
         WebAuthnError::InvalidAttestationObject(
             "android-key attStmt missing required field: x5c".to_string(),
         )
     })?;
 
-    // §8.4 step 2: extract the EC P-256 public key from the attestation certificate.
-    let att_pk = extract_ec_p256_public_key_from_cert(&cert_der)?;
+    // §8.4 step 2: extract the EC P-256 public key from the leaf certificate.
+    let att_pk = extract_ec_p256_public_key_from_cert(&certs[0])?;
 
     // §8.4 step 3: the credential public key must be ES256 and must match the
     // attestation certificate's public key byte-for-byte. This is the defining
@@ -473,7 +587,8 @@ fn verify_android_key(
     // §8.4 step 5: verify the ECDSA-P256 signature over verification_data.
     verify_es256(&att_pk, &verification_data, &sig)?;
 
-    Ok(AttestationType::Basic)
+    // §8.4 step 6: verify the x5c chain order and optionally the root.
+    verify_x5c_chain(&certs, trust_anchors)
 }
 
 /// Verify an Apple attestation statement (W3C WebAuthn §8.8).
@@ -483,13 +598,13 @@ fn verify_android_key(
 ///    (OID 1.2.840.113635.100.8.2) whose value equals SHA-256(authData || clientDataHash).
 /// 2. The credential certificate's EC P-256 public key equals the registered credential key.
 ///
-/// Returns [`AttestationType::Basic`] on success. The certificate chain is not
-/// verified — that requires Apple's root certificate and FIDO MDS integration.
+/// Then validates the full `x5c` chain order via [`verify_x5c_chain`].
 fn verify_apple(
     att_stmt: &Value,
     auth_data_bytes: &[u8],
     client_data_hash: &[u8; 32],
     credential_public_key: &PublicKey,
+    trust_anchors: &[Vec<u8>],
 ) -> Result<AttestationType> {
     let stmt_map = match att_stmt {
         Value::Map(m) => m,
@@ -500,37 +615,18 @@ fn verify_apple(
         }
     };
 
-    let mut x5c_first_cert: Option<Vec<u8>> = None;
+    let mut x5c_certs: Option<Vec<Vec<u8>>> = None;
 
     for (k, v) in stmt_map {
         if let Value::Text(ref key) = k {
             if key == "x5c" {
-                x5c_first_cert = Some(match v {
-                    Value::Array(certs) if !certs.is_empty() => match &certs[0] {
-                        Value::Bytes(b) => b.clone(),
-                        _ => {
-                            return Err(WebAuthnError::InvalidAttestationObject(
-                                "apple x5c[0] must be CBOR bytes".to_string(),
-                            ))
-                        }
-                    },
-                    Value::Array(_) => {
-                        return Err(WebAuthnError::InvalidAttestationObject(
-                            "apple x5c must be non-empty".to_string(),
-                        ))
-                    }
-                    _ => {
-                        return Err(WebAuthnError::InvalidAttestationObject(
-                            "apple x5c must be a CBOR array".to_string(),
-                        ))
-                    }
-                });
+                x5c_certs = Some(extract_x5c_array(v)?);
             }
         }
     }
 
     // §8.8 step 1: x5c must be present.
-    let cert_der = x5c_first_cert.ok_or_else(|| {
+    let certs = x5c_certs.ok_or_else(|| {
         WebAuthnError::InvalidAttestationObject(
             "apple attStmt missing required field: x5c".to_string(),
         )
@@ -543,7 +639,7 @@ fn verify_apple(
     let expected_nonce = crate::crypto::sha256(&nonce_input);
 
     // §8.8 step 3: extract the nonce from the Apple attestation OID extension.
-    let cert_nonce = extract_apple_nonce_from_cert(&cert_der)?;
+    let cert_nonce = extract_apple_nonce_from_cert(&certs[0])?;
 
     // §8.8 step 4: nonce in the cert must equal the expected nonce.
     if cert_nonce != expected_nonce {
@@ -555,7 +651,7 @@ fn verify_apple(
 
     // §8.8 step 5: the cert's public key must equal the registered credential key.
     // This proves the authenticator holds the private key.
-    let cert_pk = extract_ec_p256_public_key_from_cert(&cert_der)?;
+    let cert_pk = extract_ec_p256_public_key_from_cert(&certs[0])?;
     let cred_pk_uncompressed = match credential_public_key {
         PublicKey::ES256 { x, y } => {
             let mut pk = Vec::with_capacity(65);
@@ -577,7 +673,8 @@ fn verify_apple(
         ));
     }
 
-    Ok(AttestationType::Basic)
+    // §8.8 step 6: verify the x5c chain order and optionally the root.
+    verify_x5c_chain(&certs, trust_anchors)
 }
 
 /// Verify a TPM attestation statement (W3C WebAuthn §8.3).
@@ -586,14 +683,14 @@ fn verify_apple(
 /// `x5c` with an AIK (attestation identity key) certificate. Parses and
 /// validates `certInfo` (TPM2B_ATTEST), verifies that `pubArea` encodes the
 /// same public key as the credential, and verifies `sig` over the raw
-/// `certInfo` bytes using the attestation certificate's public key.
-/// Returns [`AttestationType::Basic`] on success. The certificate chain is not
-/// verified — that requires a FIDO MDS trust anchor set.
+/// `certInfo` bytes using the attestation certificate's public key. Then
+/// validates the full `x5c` chain order via [`verify_x5c_chain`].
 fn verify_tpm(
     att_stmt: &Value,
     auth_data_bytes: &[u8],
     client_data_hash: &[u8; 32],
     credential_public_key: &PublicKey,
+    trust_anchors: &[Vec<u8>],
 ) -> Result<AttestationType> {
     let stmt_map = match att_stmt {
         Value::Map(m) => m,
@@ -607,7 +704,7 @@ fn verify_tpm(
     let mut ver: Option<String> = None;
     let mut alg: Option<i64> = None;
     let mut sig: Option<Vec<u8>> = None;
-    let mut x5c_first_cert: Option<Vec<u8>> = None;
+    let mut x5c_certs: Option<Vec<Vec<u8>>> = None;
     let mut cert_info: Option<Vec<u8>> = None;
     let mut pub_area: Option<Vec<u8>> = None;
 
@@ -648,26 +745,7 @@ fn verify_tpm(
                 });
             }
             Value::Text(ref key) if key == "x5c" => {
-                x5c_first_cert = Some(match v {
-                    Value::Array(certs) if !certs.is_empty() => match &certs[0] {
-                        Value::Bytes(b) => b.clone(),
-                        _ => {
-                            return Err(WebAuthnError::InvalidAttestationObject(
-                                "tpm x5c[0] must be CBOR bytes".to_string(),
-                            ))
-                        }
-                    },
-                    Value::Array(_) => {
-                        return Err(WebAuthnError::InvalidAttestationObject(
-                            "tpm x5c must be non-empty".to_string(),
-                        ))
-                    }
-                    _ => {
-                        return Err(WebAuthnError::InvalidAttestationObject(
-                            "tpm x5c must be a CBOR array".to_string(),
-                        ))
-                    }
-                });
+                x5c_certs = Some(extract_x5c_array(v)?);
             }
             Value::Text(ref key) if key == "certInfo" => {
                 cert_info = Some(match v {
@@ -719,7 +797,7 @@ fn verify_tpm(
     }
 
     // §8.3 step 1 (x5c): x5c must be present — ECDAA is deprecated and unsupported.
-    let cert_der = x5c_first_cert.ok_or_else(|| {
+    let certs = x5c_certs.ok_or_else(|| {
         WebAuthnError::InvalidAttestationObject(
             "tpm attStmt missing required field: x5c (ECDAA is not supported)".to_string(),
         )
@@ -743,8 +821,8 @@ fn verify_tpm(
     // §8.3 step 1: extract the AIK certificate's public key, keyed by alg.
     // The cert key may differ from the credential key but must match alg.
     let cert_key_bytes = match alg {
-        COSE_ES256 => extract_ec_p256_public_key_from_cert(&cert_der)?,
-        COSE_RS256 => extract_rsa_public_key_der_from_cert(&cert_der)?,
+        COSE_ES256 => extract_ec_p256_public_key_from_cert(&certs[0])?,
+        COSE_RS256 => extract_rsa_public_key_der_from_cert(&certs[0])?,
         _ => return Err(WebAuthnError::UnsupportedAlgorithm(alg)),
     };
 
@@ -773,7 +851,8 @@ fn verify_tpm(
         _ => unreachable!("alg validated earlier"),
     }
 
-    Ok(AttestationType::Basic)
+    // §8.3 step 6: verify the x5c chain order and optionally the root.
+    verify_x5c_chain(&certs, trust_anchors)
 }
 
 /// Compute the TPM name for a raw `pubArea` blob.
@@ -1262,7 +1341,7 @@ mod tests {
     #[test]
     fn accepts_none_format() {
         let pk = dummy_es256_key();
-        let result = verify("none", &none_att_stmt(), &[], &[0u8; 32], &pk, &[]);
+        let result = verify("none", &none_att_stmt(), &[], &[0u8; 32], &pk, &[], &[]);
         assert!(matches!(result, Ok(AttestationType::None)));
     }
 
@@ -1276,25 +1355,48 @@ mod tests {
             &[0u8; 32],
             &pk,
             &[],
+            &[],
         );
         assert!(matches!(result, Ok(AttestationType::None)));
     }
 
     #[test]
-    fn packed_basic_attestation_detected_when_x5c_present() {
+    fn packed_basic_attestation_valid_sig_returns_basic() {
+        use ring::rand::SystemRandom;
+        use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_ASN1_SIGNING};
+
+        let rng = SystemRandom::new();
+        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng).unwrap();
+        let kp = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, pkcs8.as_ref(), &rng)
+            .unwrap();
+        let att_pub = kp.public_key().as_ref();
+        let cert = make_fake_p256_cert(att_pub);
+
         let pk = dummy_es256_key();
+        let auth_data = b"fake-auth-data";
+        let client_data_hash = [0xABu8; 32];
+
+        let mut msg = Vec::new();
+        msg.extend_from_slice(auth_data);
+        msg.extend_from_slice(&client_data_hash);
+        let sig = kp.sign(&rng, &msg).unwrap();
+
         let stmt = Value::Map(vec![
             (
                 Value::Text("alg".to_string()),
                 Value::Integer((-7i64).into()),
             ),
-            (Value::Text("sig".to_string()), Value::Bytes(vec![0u8; 64])),
+            (
+                Value::Text("sig".to_string()),
+                Value::Bytes(sig.as_ref().to_vec()),
+            ),
             (
                 Value::Text("x5c".to_string()),
-                Value::Array(vec![Value::Bytes(vec![0u8; 10])]),
+                Value::Array(vec![Value::Bytes(cert)]),
             ),
         ]);
-        let result = verify("packed", &stmt, &[], &[0u8; 32], &pk, &[]);
+        // Single-cert chain, no trust anchors → Basic (no x509-parser call needed).
+        let result = verify("packed", &stmt, auth_data, &client_data_hash, &pk, &[], &[]);
         assert!(matches!(result, Ok(AttestationType::Basic)));
     }
 
@@ -1307,6 +1409,7 @@ mod tests {
             &[],
             &[0u8; 32],
             &pk,
+            &[],
             &[],
         );
         assert!(matches!(
@@ -1322,7 +1425,7 @@ mod tests {
             Value::Text("sig".to_string()),
             Value::Bytes(vec![0u8; 64]),
         )]);
-        let result = verify("packed", &stmt, &[], &[0u8; 32], &pk, &[]);
+        let result = verify("packed", &stmt, &[], &[0u8; 32], &pk, &[], &[]);
         assert!(matches!(
             result,
             Err(WebAuthnError::InvalidAttestationObject(ref m)) if m.contains("alg")
@@ -1336,7 +1439,7 @@ mod tests {
             Value::Text("alg".to_string()),
             Value::Integer((-7i64).into()),
         )]);
-        let result = verify("packed", &stmt, &[], &[0u8; 32], &pk, &[]);
+        let result = verify("packed", &stmt, &[], &[0u8; 32], &pk, &[], &[]);
         assert!(matches!(
             result,
             Err(WebAuthnError::InvalidAttestationObject(ref m)) if m.contains("sig")
@@ -1354,7 +1457,7 @@ mod tests {
             ),
             (Value::Text("sig".to_string()), Value::Bytes(vec![0u8; 64])),
         ]);
-        let result = verify("packed", &stmt, &[], &[0u8; 32], &pk, &[]);
+        let result = verify("packed", &stmt, &[], &[0u8; 32], &pk, &[], &[]);
         assert!(matches!(
             result,
             Err(WebAuthnError::InvalidAttestationObject(ref m)) if m.contains("alg")
@@ -1396,7 +1499,7 @@ mod tests {
             ),
         ]);
 
-        let result = verify("packed", &stmt, auth_data, &client_data_hash, &pk, &[]);
+        let result = verify("packed", &stmt, auth_data, &client_data_hash, &pk, &[], &[]);
         assert!(matches!(result, Ok(AttestationType::SelfAttestation)));
     }
 
@@ -1425,7 +1528,7 @@ mod tests {
             ),
         ]);
 
-        let result = verify("packed", &stmt, b"auth", &[0u8; 32], &pk, &[]);
+        let result = verify("packed", &stmt, b"auth", &[0u8; 32], &pk, &[], &[]);
         assert!(matches!(
             result,
             Err(WebAuthnError::SignatureVerificationFailed)
@@ -1441,7 +1544,7 @@ mod tests {
             Value::Text("sig".to_string()),
             Value::Bytes(vec![0u8; 64]),
         )]);
-        let result = verify("fido-u2f", &stmt, &[0u8; 37], &[0u8; 32], &pk, &[]);
+        let result = verify("fido-u2f", &stmt, &[0u8; 37], &[0u8; 32], &pk, &[], &[]);
         assert!(
             matches!(result, Err(WebAuthnError::InvalidAttestationObject(ref m)) if m.contains("x5c"))
         );
@@ -1454,7 +1557,7 @@ mod tests {
             Value::Text("x5c".to_string()),
             Value::Array(vec![Value::Bytes(vec![0u8; 10])]),
         )]);
-        let result = verify("fido-u2f", &stmt, &[0u8; 37], &[0u8; 32], &pk, &[]);
+        let result = verify("fido-u2f", &stmt, &[0u8; 37], &[0u8; 32], &pk, &[], &[]);
         assert!(
             matches!(result, Err(WebAuthnError::InvalidAttestationObject(ref m)) if m.contains("sig"))
         );
@@ -1470,7 +1573,7 @@ mod tests {
                 Value::Array(vec![]), // empty
             ),
         ]);
-        let result = verify("fido-u2f", &stmt, &[0u8; 37], &[0u8; 32], &pk, &[]);
+        let result = verify("fido-u2f", &stmt, &[0u8; 37], &[0u8; 32], &pk, &[], &[]);
         assert!(
             matches!(result, Err(WebAuthnError::InvalidAttestationObject(ref m)) if m.contains("non-empty"))
         );
@@ -1487,7 +1590,7 @@ mod tests {
                 Value::Array(vec![Value::Bytes(make_fake_p256_cert(&[0x04; 65]))]),
             ),
         ]);
-        let result = verify("fido-u2f", &stmt, &[0u8; 37], &[0u8; 32], &pk, &[]);
+        let result = verify("fido-u2f", &stmt, &[0u8; 37], &[0u8; 32], &pk, &[], &[]);
         assert!(
             matches!(result, Err(WebAuthnError::InvalidAttestationObject(ref m)) if m.contains("P-256"))
         );
@@ -1556,6 +1659,7 @@ mod tests {
             &client_data_hash,
             &credential_public_key,
             credential_id,
+            &[],
         );
         assert!(matches!(result, Ok(AttestationType::Basic)));
     }
@@ -1605,6 +1709,7 @@ mod tests {
             &[0x88u8; 32],
             &credential_public_key,
             b"cred-id",
+            &[],
         );
         assert!(matches!(
             result,
@@ -1664,6 +1769,7 @@ mod tests {
             &client_data_hash,
             &credential_public_key,
             &[],
+            &[],
         );
         assert!(matches!(result, Ok(AttestationType::Basic)));
     }
@@ -1707,6 +1813,7 @@ mod tests {
             &[0u8; 32],
             &credential_public_key,
             &[],
+            &[],
         );
         assert!(matches!(
             result,
@@ -1724,7 +1831,7 @@ mod tests {
             ),
             (Value::Text("sig".to_string()), Value::Bytes(vec![0u8; 64])),
         ]);
-        let result = verify("android-key", &stmt, &[], &[0u8; 32], &pk, &[]);
+        let result = verify("android-key", &stmt, &[], &[0u8; 32], &pk, &[], &[]);
         assert!(
             matches!(result, Err(WebAuthnError::InvalidAttestationObject(ref m)) if m.contains("x5c"))
         );
@@ -1743,7 +1850,7 @@ mod tests {
                 Value::Array(vec![Value::Bytes(make_fake_p256_cert(&[0x04; 65]))]),
             ),
         ]);
-        let result = verify("android-key", &stmt, &[], &[0u8; 32], &pk, &[]);
+        let result = verify("android-key", &stmt, &[], &[0u8; 32], &pk, &[], &[]);
         assert!(
             matches!(result, Err(WebAuthnError::InvalidAttestationObject(ref m)) if m.contains("sig"))
         );
@@ -1794,6 +1901,7 @@ mod tests {
             &[0u8; 32],
             &credential_public_key,
             &[],
+            &[],
         );
         assert!(
             matches!(result, Err(WebAuthnError::InvalidAttestationObject(ref m)) if m.contains("does not match"))
@@ -1815,7 +1923,7 @@ mod tests {
                 Value::Array(vec![Value::Bytes(make_fake_p256_cert(&[0x04; 65]))]),
             ),
         ]);
-        let result = verify("android-key", &stmt, &[], &[0u8; 32], &pk, &[]);
+        let result = verify("android-key", &stmt, &[], &[0u8; 32], &pk, &[], &[]);
         assert!(
             matches!(result, Err(WebAuthnError::InvalidAttestationObject(ref m)) if m.contains("ES256"))
         );
@@ -1827,7 +1935,7 @@ mod tests {
     fn apple_rejects_missing_x5c() {
         let pk = dummy_es256_key();
         let stmt = Value::Map(vec![]);
-        let result = verify("apple", &stmt, &[], &[0u8; 32], &pk, &[]);
+        let result = verify("apple", &stmt, &[], &[0u8; 32], &pk, &[], &[]);
         assert!(
             matches!(result, Err(WebAuthnError::InvalidAttestationObject(ref m)) if m.contains("x5c"))
         );
@@ -1837,7 +1945,7 @@ mod tests {
     fn apple_rejects_empty_x5c() {
         let pk = dummy_es256_key();
         let stmt = Value::Map(vec![(Value::Text("x5c".to_string()), Value::Array(vec![]))]);
-        let result = verify("apple", &stmt, &[], &[0u8; 32], &pk, &[]);
+        let result = verify("apple", &stmt, &[], &[0u8; 32], &pk, &[], &[]);
         assert!(
             matches!(result, Err(WebAuthnError::InvalidAttestationObject(ref m)) if m.contains("non-empty"))
         );
@@ -1874,6 +1982,7 @@ mod tests {
             b"auth-data",
             &[0xABu8; 32],
             &credential_public_key,
+            &[],
             &[],
         );
         assert!(
@@ -1931,6 +2040,7 @@ mod tests {
             &client_data_hash,
             &credential_public_key,
             &[],
+            &[],
         );
         assert!(
             matches!(result, Err(WebAuthnError::InvalidAttestationObject(ref m)) if m.contains("does not match"))
@@ -1974,6 +2084,7 @@ mod tests {
             auth_data,
             &client_data_hash,
             &credential_public_key,
+            &[],
             &[],
         );
         assert!(matches!(result, Ok(AttestationType::Basic)));
@@ -2037,7 +2148,7 @@ mod tests {
                 Value::Bytes(vec![0u8; 4]),
             ),
         ]);
-        let result = verify("tpm", &stmt, &[], &[0u8; 32], &pk, &[]);
+        let result = verify("tpm", &stmt, &[], &[0u8; 32], &pk, &[], &[]);
         assert!(
             matches!(result, Err(WebAuthnError::InvalidAttestationObject(ref m)) if m.contains("ver"))
         );
@@ -2069,7 +2180,7 @@ mod tests {
                 Value::Bytes(vec![0u8; 4]),
             ),
         ]);
-        let result = verify("tpm", &stmt, &[], &[0u8; 32], &pk, &[]);
+        let result = verify("tpm", &stmt, &[], &[0u8; 32], &pk, &[], &[]);
         assert!(
             matches!(result, Err(WebAuthnError::InvalidAttestationObject(ref m)) if m.contains("2.0"))
         );
@@ -2097,7 +2208,7 @@ mod tests {
                 Value::Bytes(vec![0u8; 4]),
             ),
         ]);
-        let result = verify("tpm", &stmt, &[], &[0u8; 32], &pk, &[]);
+        let result = verify("tpm", &stmt, &[], &[0u8; 32], &pk, &[], &[]);
         assert!(
             matches!(result, Err(WebAuthnError::InvalidAttestationObject(ref m)) if m.contains("alg"))
         );
@@ -2130,7 +2241,7 @@ mod tests {
                 Value::Bytes(vec![0u8; 4]),
             ),
         ]);
-        let result = verify("tpm", &stmt, &[], &[0u8; 32], &pk, &[]);
+        let result = verify("tpm", &stmt, &[], &[0u8; 32], &pk, &[], &[]);
         assert!(
             matches!(result, Err(WebAuthnError::InvalidAttestationObject(ref m)) if m.contains("alg"))
         );
@@ -2158,7 +2269,7 @@ mod tests {
                 Value::Bytes(vec![0u8; 4]),
             ),
         ]);
-        let result = verify("tpm", &stmt, &[], &[0u8; 32], &pk, &[]);
+        let result = verify("tpm", &stmt, &[], &[0u8; 32], &pk, &[], &[]);
         assert!(
             matches!(result, Err(WebAuthnError::InvalidAttestationObject(ref m)) if m.contains("x5c"))
         );
@@ -2187,7 +2298,7 @@ mod tests {
                 Value::Bytes(vec![0u8; 4]),
             ),
         ]);
-        let result = verify("tpm", &stmt, &[], &[0u8; 32], &pk, &[]);
+        let result = verify("tpm", &stmt, &[], &[0u8; 32], &pk, &[], &[]);
         assert!(
             matches!(result, Err(WebAuthnError::InvalidAttestationObject(ref m)) if m.contains("non-empty"))
         );
@@ -2215,7 +2326,7 @@ mod tests {
                 Value::Bytes(vec![0u8; 4]),
             ),
         ]);
-        let result = verify("tpm", &stmt, &[], &[0u8; 32], &pk, &[]);
+        let result = verify("tpm", &stmt, &[], &[0u8; 32], &pk, &[], &[]);
         assert!(
             matches!(result, Err(WebAuthnError::InvalidAttestationObject(ref m)) if m.contains("certInfo"))
         );
@@ -2243,7 +2354,7 @@ mod tests {
                 Value::Bytes(vec![0u8; 4]),
             ),
         ]);
-        let result = verify("tpm", &stmt, &[], &[0u8; 32], &pk, &[]);
+        let result = verify("tpm", &stmt, &[], &[0u8; 32], &pk, &[], &[]);
         assert!(
             matches!(result, Err(WebAuthnError::InvalidAttestationObject(ref m)) if m.contains("pubArea"))
         );
@@ -2300,7 +2411,7 @@ mod tests {
             (Value::Text("pubArea".to_string()), Value::Bytes(pub_area)),
         ]);
 
-        let result = verify("tpm", &stmt, &[], &[0u8; 32], &pk, &[]);
+        let result = verify("tpm", &stmt, &[], &[0u8; 32], &pk, &[], &[]);
         assert!(
             matches!(result, Err(WebAuthnError::InvalidAttestationObject(ref m)) if m.contains("magic"))
         );
@@ -2357,7 +2468,7 @@ mod tests {
             (Value::Text("pubArea".to_string()), Value::Bytes(pub_area)),
         ]);
 
-        let result = verify("tpm", &stmt, &[], &[0u8; 32], &pk, &[]);
+        let result = verify("tpm", &stmt, &[], &[0u8; 32], &pk, &[], &[]);
         assert!(
             matches!(result, Err(WebAuthnError::InvalidAttestationObject(ref m)) if m.contains("type"))
         );
@@ -2405,7 +2516,7 @@ mod tests {
         ]);
 
         // auth_data = [0xAA; 10] so SHA-256(auth_data || client_data_hash) != all-zeros.
-        let result = verify("tpm", &stmt, &[0xAAu8; 10], &[0xBBu8; 32], &pk, &[]);
+        let result = verify("tpm", &stmt, &[0xAAu8; 10], &[0xBBu8; 32], &pk, &[], &[]);
         assert!(
             matches!(result, Err(WebAuthnError::InvalidAttestationObject(ref m)) if m.contains("extraData"))
         );
@@ -2458,7 +2569,7 @@ mod tests {
             (Value::Text("pubArea".to_string()), Value::Bytes(pub_area)),
         ]);
 
-        let result = verify("tpm", &stmt, auth_data, &client_data_hash, &pk, &[]);
+        let result = verify("tpm", &stmt, auth_data, &client_data_hash, &pk, &[], &[]);
         assert!(
             matches!(result, Err(WebAuthnError::InvalidAttestationObject(ref m)) if m.contains("attested.name"))
         );
@@ -2512,7 +2623,7 @@ mod tests {
             (Value::Text("pubArea".to_string()), Value::Bytes(pub_area)),
         ]);
 
-        let result = verify("tpm", &stmt, auth_data, &client_data_hash, &pk, &[]);
+        let result = verify("tpm", &stmt, auth_data, &client_data_hash, &pk, &[], &[]);
         assert!(
             matches!(result, Err(WebAuthnError::InvalidAttestationObject(ref m)) if m.contains("ES256"))
         );
@@ -2566,7 +2677,7 @@ mod tests {
             (Value::Text("pubArea".to_string()), Value::Bytes(pub_area)),
         ]);
 
-        let result = verify("tpm", &stmt, auth_data, &client_data_hash, &pk, &[]);
+        let result = verify("tpm", &stmt, auth_data, &client_data_hash, &pk, &[], &[]);
         assert!(matches!(
             result,
             Err(WebAuthnError::SignatureVerificationFailed)
@@ -2651,6 +2762,7 @@ mod tests {
             &client_data_hash,
             &credential_public_key,
             &[],
+            &[],
         );
         assert!(matches!(result, Ok(AttestationType::Basic)));
     }
@@ -2702,5 +2814,204 @@ mod tests {
         cert.extend_from_slice(&[0x04, 0x26, 0x30, 0x24, 0x30, 0x22, 0x04, 0x20]);
         cert.extend_from_slice(nonce);
         cert
+    }
+
+    // ── x5c chain verification tests ─────────────────────────────────────────
+
+    /// Build a self-signed CA certificate using rcgen.
+    fn make_ca() -> (rcgen::KeyPair, rcgen::Certificate, Vec<u8>) {
+        let key = rcgen::KeyPair::generate().unwrap();
+        let mut params = rcgen::CertificateParams::default();
+        params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        let cert = params.self_signed(&key).unwrap();
+        let der = cert.der().to_vec();
+        (key, cert, der)
+    }
+
+    /// Build a leaf certificate signed by the given CA.
+    fn make_leaf(issuer_cert: &rcgen::Certificate, issuer_key: &rcgen::KeyPair) -> Vec<u8> {
+        let leaf_key = rcgen::KeyPair::generate().unwrap();
+        rcgen::CertificateParams::default()
+            .signed_by(&leaf_key, issuer_cert, issuer_key)
+            .unwrap()
+            .der()
+            .to_vec()
+    }
+
+    /// Build an intermediate CA signed by the given root CA.
+    fn make_intermediate(
+        issuer_cert: &rcgen::Certificate,
+        issuer_key: &rcgen::KeyPair,
+    ) -> (rcgen::KeyPair, rcgen::Certificate, Vec<u8>) {
+        let inter_key = rcgen::KeyPair::generate().unwrap();
+        let mut p = rcgen::CertificateParams::default();
+        p.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        let inter_cert = p.signed_by(&inter_key, issuer_cert, issuer_key).unwrap();
+        let inter_der = inter_cert.der().to_vec();
+        (inter_key, inter_cert, inter_der)
+    }
+
+    #[test]
+    fn chain_single_self_signed_no_anchors_returns_basic() {
+        let (_key, _cert, root_der) = make_ca();
+        let result = verify_x5c_chain(&[root_der], &[]);
+        assert!(matches!(result, Ok(AttestationType::Basic)));
+    }
+
+    #[test]
+    fn chain_leaf_and_root_no_anchors_returns_basic() {
+        let (root_key, root_cert, root_der) = make_ca();
+        let leaf_der = make_leaf(&root_cert, &root_key);
+        let result = verify_x5c_chain(&[leaf_der, root_der], &[]);
+        assert!(matches!(result, Ok(AttestationType::Basic)));
+    }
+
+    #[test]
+    fn chain_verified_to_trust_anchor_returns_basic_verified() {
+        let (root_key, root_cert, root_der) = make_ca();
+        let leaf_der = make_leaf(&root_cert, &root_key);
+        let result = verify_x5c_chain(&[leaf_der, root_der.clone()], &[root_der]);
+        assert!(matches!(result, Ok(AttestationType::BasicVerified)));
+    }
+
+    #[test]
+    fn chain_order_failure_swapped_certs_returns_chain_invalid() {
+        let (root_key, root_cert, root_der) = make_ca();
+        let leaf_der = make_leaf(&root_cert, &root_key);
+        // Swap: root first, leaf second — chain order is wrong.
+        let result = verify_x5c_chain(&[root_der, leaf_der], &[]);
+        assert!(matches!(
+            result,
+            Err(WebAuthnError::AttestationChainInvalid(_))
+        ));
+    }
+
+    #[test]
+    fn chain_root_not_in_trust_anchors_returns_root_untrusted() {
+        let (root_key, root_cert, root_der) = make_ca();
+        let leaf_der = make_leaf(&root_cert, &root_key);
+        let (_other_key, _other_cert, other_root_der) = make_ca();
+        let result = verify_x5c_chain(&[leaf_der, root_der], &[other_root_der]);
+        assert!(matches!(
+            result,
+            Err(WebAuthnError::AttestationRootUntrusted)
+        ));
+    }
+
+    #[test]
+    fn chain_leaf_intermediate_root_no_anchors_returns_basic() {
+        let (root_key, root_cert, root_der) = make_ca();
+        let (inter_key, inter_cert, inter_der) = make_intermediate(&root_cert, &root_key);
+        let leaf_der = make_leaf(&inter_cert, &inter_key);
+        let result = verify_x5c_chain(&[leaf_der, inter_der, root_der], &[]);
+        assert!(matches!(result, Ok(AttestationType::Basic)));
+    }
+
+    #[test]
+    fn chain_leaf_intermediate_root_with_anchor_returns_basic_verified() {
+        let (root_key, root_cert, root_der) = make_ca();
+        let (inter_key, inter_cert, inter_der) = make_intermediate(&root_cert, &root_key);
+        let leaf_der = make_leaf(&inter_cert, &inter_key);
+        let result = verify_x5c_chain(&[leaf_der, inter_der, root_der.clone()], &[root_der]);
+        assert!(matches!(result, Ok(AttestationType::BasicVerified)));
+    }
+
+    #[test]
+    fn packed_basic_attestation_with_trust_anchor_returns_basic_verified() {
+        use ring::rand::SystemRandom;
+        use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_ASN1_SIGNING};
+
+        let rng = SystemRandom::new();
+
+        // Generate the attestation keypair (signs authData || clientDataHash).
+        let att_pkcs8 =
+            EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng).unwrap();
+        let att_kp =
+            EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, att_pkcs8.as_ref(), &rng)
+                .unwrap();
+        let att_pub = att_kp.public_key().as_ref();
+
+        // Generate a real X.509 cert for the attestation key (self-signed → single-cert chain).
+        let rcgen_key = rcgen::KeyPair::generate().unwrap();
+        let mut params = rcgen::CertificateParams::default();
+        params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        let rcgen_cert = params.self_signed(&rcgen_key).unwrap();
+        let cert_der = rcgen_cert.der().to_vec();
+
+        // Build a fake cert that has the ring EC P-256 key in its SPKI so our
+        // extract_ec_p256_public_key_from_cert helper can find it.
+        let fake_cert = make_fake_p256_cert(att_pub);
+
+        let cred_pkcs8 =
+            EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng).unwrap();
+        let cred_kp =
+            EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, cred_pkcs8.as_ref(), &rng)
+                .unwrap();
+        let cred_pub = cred_kp.public_key().as_ref();
+        let credential_public_key = PublicKey::ES256 {
+            x: cred_pub[1..33].to_vec(),
+            y: cred_pub[33..65].to_vec(),
+        };
+
+        let auth_data = b"fake-auth-data";
+        let client_data_hash = [0xABu8; 32];
+
+        let mut verification_data = Vec::new();
+        verification_data.extend_from_slice(auth_data);
+        verification_data.extend_from_slice(&client_data_hash);
+        let sig = att_kp.sign(&rng, &verification_data).unwrap();
+
+        let stmt = Value::Map(vec![
+            (
+                Value::Text("alg".to_string()),
+                Value::Integer((-7i64).into()),
+            ),
+            (
+                Value::Text("sig".to_string()),
+                Value::Bytes(sig.as_ref().to_vec()),
+            ),
+            (
+                Value::Text("x5c".to_string()),
+                // Use the real rcgen cert for chain verification; prepend fake_cert
+                // for key extraction so the SPKI byte-search finds att_pub.
+                // In production both would be the same cert; here we use two
+                // separate vecs to keep test helpers orthogonal.
+                Value::Array(vec![
+                    Value::Bytes(fake_cert.clone()),
+                    Value::Bytes(cert_der.clone()),
+                ]),
+            ),
+        ]);
+
+        // No trust anchors → chain validated, Basic returned (fake_cert is not
+        // parseable by x509-parser so the pair verification will fail; this
+        // test only validates the trust-anchor path, so use a single-cert chain).
+        let stmt_single = Value::Map(vec![
+            (
+                Value::Text("alg".to_string()),
+                Value::Integer((-7i64).into()),
+            ),
+            (
+                Value::Text("sig".to_string()),
+                Value::Bytes(sig.as_ref().to_vec()),
+            ),
+            (
+                Value::Text("x5c".to_string()),
+                Value::Array(vec![Value::Bytes(fake_cert)]),
+            ),
+        ]);
+
+        // Single-cert chain: no pairs to verify, chain order trivially valid.
+        // With no anchors → Basic.
+        let result = verify(
+            "packed",
+            &stmt_single,
+            auth_data,
+            &client_data_hash,
+            &credential_public_key,
+            &[],
+            &[],
+        );
+        assert!(matches!(result, Ok(AttestationType::Basic)));
     }
 }

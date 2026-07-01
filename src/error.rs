@@ -122,6 +122,24 @@ pub enum WebAuthnError {
         "Backup Eligibility flag changed since registration — credential may have been substituted"
     )]
     BackupEligibilityChanged,
+
+    /// The `x5c` certificate chain in an attestation statement is structurally
+    /// invalid: a certificate in the chain is not signed by the next certificate,
+    /// or the DER encoding is malformed.
+    ///
+    /// The inner string identifies which link in the chain failed and why.
+    #[error("Attestation certificate chain invalid: {0}")]
+    AttestationChainInvalid(String),
+
+    /// The `x5c` chain is structurally valid but its root certificate is not
+    /// signed by any of the configured trust anchors.
+    ///
+    /// This error is only returned when the relying party has configured at least
+    /// one trust anchor via [`crate::RelyingParty::trust_anchors`]. When no
+    /// trust anchors are configured the chain structure is still verified but
+    /// the root is accepted unconditionally.
+    #[error("Attestation root certificate is not trusted by any configured trust anchor")]
+    AttestationRootUntrusted,
 }
 
 /// Convenience alias so callers write `webauthn::Result<T>`.

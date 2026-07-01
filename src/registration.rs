@@ -113,6 +113,20 @@ pub struct RelyingParty {
     /// hardware-bound keys that cannot leave the device.
     /// See [`RelyingParty::reject_backup_eligible`] to enable via the builder.
     pub reject_backup_eligible: bool,
+
+    /// DER-encoded root CA certificates used to verify the `x5c` attestation
+    /// chain returned by the authenticator.
+    ///
+    /// When non-empty, `verify_registration` walks the chain returned in `x5c`
+    /// and checks that its root is signed by one of these anchors. A successful
+    /// check upgrades the result to [`crate::credential::AttestationType::BasicVerified`].
+    ///
+    /// When empty (the default), the chain order is still validated (each
+    /// certificate must be signed by the next), but the root is not checked
+    /// against any CA set and `AttestationType::Basic` is returned instead.
+    ///
+    /// Use [`RelyingParty::trust_anchors`] to set this at construction time.
+    pub trust_anchors: Vec<Vec<u8>>,
 }
 
 impl RelyingParty {
@@ -132,6 +146,7 @@ impl RelyingParty {
             allowed_algorithms: vec![],
             require_backup_eligible: false,
             reject_backup_eligible: false,
+            trust_anchors: vec![],
         }
     }
 
@@ -160,6 +175,7 @@ impl RelyingParty {
             allowed_algorithms: vec![],
             require_backup_eligible: false,
             reject_backup_eligible: false,
+            trust_anchors: vec![],
         }
     }
 
@@ -257,6 +273,29 @@ impl RelyingParty {
     /// ```
     pub fn reject_backup_eligible(mut self, reject: bool) -> Self {
         self.reject_backup_eligible = reject;
+        self
+    }
+
+    /// Provide DER-encoded root CA certificates used to verify the `x5c` chain.
+    ///
+    /// When a non-empty set is supplied, `verify_registration` verifies that
+    /// the root of the attestation certificate chain is signed by one of these
+    /// anchors and returns [`crate::credential::AttestationType::BasicVerified`]
+    /// on success, or [`crate::error::WebAuthnError::AttestationRootUntrusted`]
+    /// on failure. Chain structure (each cert signed by the next) is always
+    /// checked regardless of this setting.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use webauthn::RelyingParty;
+    ///
+    /// let fido_root_der: Vec<u8> = std::fs::read("fido-root.der").unwrap();
+    /// let rp = RelyingParty::new("example.com", "https://example.com", "My Service")
+    ///     .trust_anchors([fido_root_der]);
+    /// ```
+    pub fn trust_anchors(mut self, roots: impl IntoIterator<Item = Vec<u8>>) -> Self {
+        self.trust_anchors = roots.into_iter().collect();
         self
     }
 
@@ -402,6 +441,7 @@ fn verify_registration_inner(
     // Verify the attestation statement. Pass the public key so packed
     // self-attestation can verify the signature with the credential key.
     // Pass credential_id for fido-u2f verificationData construction.
+    // Pass trust_anchors for x5c chain root verification (§7.1 step 22).
     let attestation_type = attestation::verify(
         &fmt,
         &att_stmt,
@@ -409,6 +449,7 @@ fn verify_registration_inner(
         &client_data_hash,
         &public_key,
         &cred_data.credential_id,
+        &rp.trust_anchors,
     )?;
 
     let backup_eligible = auth_data.flags.backup_eligible;

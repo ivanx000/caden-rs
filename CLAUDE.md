@@ -283,11 +283,7 @@ Canonical spec: https://www.w3.org/TR/webauthn-3/
 
 | Limitation | Notes |
 |------------|-------|
-| Packed basic attestation cert chain | `x5c` detected, `AttestationType::Basic` returned; chain not verified (no MDS) |
-| FIDO U2F cert chain | Signature verified, cert chain not verified (no MDS trust anchors) |
-| Android Key cert chain | Signature + key-match verified, cert chain not verified (no MDS trust anchors) |
-| TPM cert chain | sig + certInfo + pubArea verified; cert chain not verified (no MDS trust anchors) |
-| Apple cert chain | Nonce + key-match verified; cert chain not verified (no Apple MDS trust anchors) |
+| Cert chain trust anchors (all formats) | `x5c` chain order is verified; root checked against `RelyingParty::trust_anchors` when configured, otherwise accepted as `Basic`. No FIDO MDS integration — authenticator model/provenance cannot be verified. |
 | Challenge single-use enforcement | The caller is responsible — the library does not maintain a used-challenge set |
 | No FIDO Metadata Service | Authenticator model/provenance cannot be verified |
 | UV flag optional | Off by default; enable with `RelyingParty::new(...).require_user_verification(true)` |
@@ -494,26 +490,31 @@ crate. All security-critical operations remain inside `ring`'s audited boundary.
 - **Self-attestation** (`x5c` absent): `alg` verified to match the credential key
   algorithm, `authData || clientDataHash` verified using `verify_es256` or
   `verify_rs256`. Returns `AttestationType::SelfAttestation`.
-- **Basic attestation** (`x5c` present): detected and returns `AttestationType::Basic`.
-  Certificate chain is not verified — no FIDO MDS trust anchor set available.
+- **Basic attestation** (`x5c` present): the leaf cert's EC P-256 public key is
+  used to verify `sig` over `authData || clientDataHash`. The `x5c` chain order is
+  verified (each cert signed by the next). Returns `AttestationType::Basic` when no
+  trust anchors are configured, or `AttestationType::BasicVerified` when the chain
+  root matches a configured trust anchor.
 - **FIDO U2F** (`"fido-u2f"`): signature verified against the attestation cert's
-  EC P-256 public key. Returns `AttestationType::Basic`. Certificate chain not verified.
+  EC P-256 public key. `x5c` chain order verified. Returns `AttestationType::Basic`
+  or `BasicVerified` depending on trust anchors.
 - **Android Key** (`"android-key"`): `alg`, `sig`, and `x5c` are required. The
   attestation cert's EC P-256 public key must equal the credential public key
   (the key security property proving the key lives in a hardware-backed Keystore).
-  Signature verified over `authData || clientDataHash`. Returns `AttestationType::Basic`.
-  Certificate chain not verified.
+  Signature verified over `authData || clientDataHash`. `x5c` chain order verified.
+  Returns `AttestationType::Basic` or `BasicVerified`.
 - **Apple** (`"apple"`): `x5c` is required. The credential certificate must contain
   the Apple nonce extension (OID 1.2.840.113635.100.8.2) whose value equals
   SHA-256(`authData || clientDataHash`). The cert's EC P-256 public key must equal
-  the credential public key. Returns `AttestationType::Basic`. Certificate chain not verified.
+  the credential public key. `x5c` chain order verified. Returns
+  `AttestationType::Basic` or `BasicVerified`.
 - **TPM** (`"tpm"`): `ver` must be `"2.0"`, `alg` must match the credential key,
   `x5c` is required. `sig` is verified over the raw `certInfo` bytes using the
   AIK cert's public key. `certInfo` (TPM2B_ATTEST) is parsed to verify `magic`,
   `type`, `extraData` (= SHA-256(authData || clientDataHash)), and
   `attested.name` (= nameAlg_bytes || H_nameAlg(pubArea)). `pubArea` key
-  coordinates are compared against the credential key. Returns
-  `AttestationType::Basic`. Certificate chain not verified.
+  coordinates are compared against the credential key. `x5c` chain order verified.
+  Returns `AttestationType::Basic` or `BasicVerified`.
 - Other formats: accepted with `AttestationType::None`
   (provenance unverifiable but credential usable).
 
@@ -522,7 +523,9 @@ CBOR value alongside `fmt` and `authData`. The `attestation::verify` signature w
 extended to accept `att_stmt`, `auth_data_bytes`, `client_data_hash`, and
 `credential_public_key`.
 
-`AttestationType::Basic` variant was added to `credential.rs`.
+`AttestationType::Basic` and `AttestationType::BasicVerified` variants were added to `credential.rs`.
+`WebAuthnError::AttestationChainInvalid` and `WebAuthnError::AttestationRootUntrusted` were added to `error.rs`.
+`RelyingParty::trust_anchors(roots)` builder method added to `registration.rs` for configuring DER-encoded root CA certificates.
 
 ### Axum HTTP server example (`examples/server.rs`)
 

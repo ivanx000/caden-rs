@@ -279,10 +279,17 @@ pub enum AttestationType {
     SelfAttestation,
 
     /// The attestation was signed by a separate attestation key with an `x5c`
-    /// certificate chain present. The certificate chain is **not** verified by
-    /// this library (no trust-anchor set or FIDO MDS integration). The credential
-    /// is accepted, but device provenance is unverified.
+    /// certificate chain present. The chain order has been verified (each cert is
+    /// signed by the next), but the root has **not** been checked against a trust
+    /// anchor because none were configured on [`crate::RelyingParty`]. Device
+    /// provenance is structurally plausible but not cryptographically anchored.
     Basic,
+
+    /// Same as [`Basic`](AttestationType::Basic) but the root certificate was
+    /// additionally verified to be signed by one of the trust anchors configured
+    /// via [`crate::RelyingParty::trust_anchors`]. Device provenance is
+    /// cryptographically anchored to the configured CA set.
+    BasicVerified,
 }
 
 // ─── Serde round-trip tests ───────────────────────────────────────────────────

@@ -43,9 +43,15 @@ base64 = "0.22"
 # Structured error types for the library
 thiserror = "1"
 
+# X.509 certificate parsing and signature verification for attestation chain validation.
+# The "verify" feature adds ring-backed signature checking used in verify_x5c_chain.
+x509-parser = { version = "0.16", features = ["verify"] }
+
 [dev-dependencies]
 # Ergonomic error handling for the demo binary and integration tests
 anyhow = "1"
+# X.509 certificate generation for attestation chain verification tests
+rcgen = "0.13"
 # HTTP server for the server example
 axum = "0.7"
 tokio = { version = "1", features = ["full"] }
