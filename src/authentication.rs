@@ -98,6 +98,19 @@ fn verify_authentication_inner(
         rp.reject_cross_origin,
     )?;
 
+    // ── Single-use challenge enforcement (opt-in) ─────────────────────────────
+    // Mirror the registration check: consume the challenge after it passes
+    // expiry and binding, before any further crypto work.
+    if let Some(ref used) = rp.used_challenges {
+        let mut set = used
+            .lock()
+            .expect("used_challenges mutex is poisoned — a previous ceremony panicked");
+        if set.contains(&challenge.bytes) {
+            return Err(WebAuthnError::ChallengePreviouslyUsed);
+        }
+        set.insert(challenge.bytes.clone());
+    }
+
     // ── §7.2 step 17 ─────────────────────────────────────────────────────────
     // Let hash be SHA-256(clientDataJSON bytes).
     let client_data_hash = sha256(&parsed_cd.raw_json);

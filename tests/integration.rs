@@ -2443,6 +2443,151 @@ fn registration_without_extension_data_has_none_extensions() {
     assert!(result.extensions.is_none());
 }
 
+// ─── Single-use challenge enforcement tests ───────────────────────────────────
+
+#[test]
+fn single_use_enforcement_disabled_by_default() {
+    // Without opt-in, reusing the same challenge bytes must succeed (the caller
+    // is responsible for single-use tracking in their session store).
+    let rp = RelyingParty::new(RP_ID, ORIGIN, "Test RP");
+    let fixture = Fixture::new();
+
+    let challenge = Challenge::new().unwrap();
+    let response = fixture.make_registration_response(
+        &challenge.bytes,
+        "webauthn.create",
+        ORIGIN,
+        RP_ID,
+        0x41,
+        1,
+        "none",
+    );
+    rp.verify_registration(&challenge, &response, b"uid")
+        .expect("first registration should succeed");
+
+    // Same challenge, different fixture (different key/cred_id so it would
+    // otherwise be valid) — library must NOT reject it when enforcement is off.
+    let fixture2 = Fixture::new();
+    let response2 = fixture2.make_registration_response(
+        &challenge.bytes,
+        "webauthn.create",
+        ORIGIN,
+        RP_ID,
+        0x41,
+        1,
+        "none",
+    );
+    rp.verify_registration(&challenge, &response2, b"uid2")
+        .expect("second registration with same challenge should succeed when enforcement is off");
+}
+
+#[test]
+fn single_use_enforcement_rejects_duplicate_registration_challenge() {
+    let rp = RelyingParty::new(RP_ID, ORIGIN, "Test RP").enforce_single_use_challenges(true);
+    let fixture = Fixture::new();
+
+    let challenge = Challenge::new().unwrap();
+    let response = fixture.make_registration_response(
+        &challenge.bytes,
+        "webauthn.create",
+        ORIGIN,
+        RP_ID,
+        0x41,
+        1,
+        "none",
+    );
+    rp.verify_registration(&challenge, &response, b"uid")
+        .expect("first registration should succeed");
+
+    let fixture2 = Fixture::new();
+    let response2 = fixture2.make_registration_response(
+        &challenge.bytes,
+        "webauthn.create",
+        ORIGIN,
+        RP_ID,
+        0x41,
+        1,
+        "none",
+    );
+    let err = rp
+        .verify_registration(&challenge, &response2, b"uid2")
+        .unwrap_err();
+    assert!(
+        matches!(err, WebAuthnError::ChallengePreviouslyUsed),
+        "expected ChallengePreviouslyUsed, got {err:?}"
+    );
+}
+
+#[test]
+fn single_use_enforcement_rejects_duplicate_authentication_challenge() {
+    let rp = RelyingParty::new(RP_ID, ORIGIN, "Test RP").enforce_single_use_challenges(true);
+    let fixture = Fixture::new();
+    let credential = {
+        let ch = Challenge::new().unwrap();
+        let r = fixture.make_registration_response(
+            &ch.bytes,
+            "webauthn.create",
+            ORIGIN,
+            RP_ID,
+            0x41,
+            1,
+            "none",
+        );
+        rp.verify_registration(&ch, &r, b"uid").unwrap().credential
+    };
+
+    let auth_challenge = Challenge::new().unwrap();
+    let r1 = fixture.make_auth_response(&auth_challenge.bytes, ORIGIN, RP_ID, 2);
+    let result = rp
+        .verify_authentication(&credential, &auth_challenge, &r1)
+        .expect("first authentication should succeed");
+    let mut credential = credential;
+    credential.sign_count = result.new_sign_count;
+
+    let r2 = fixture.make_auth_response(&auth_challenge.bytes, ORIGIN, RP_ID, 3);
+    let err = rp
+        .verify_authentication(&credential, &auth_challenge, &r2)
+        .unwrap_err();
+    assert!(
+        matches!(err, WebAuthnError::ChallengePreviouslyUsed),
+        "expected ChallengePreviouslyUsed, got {err:?}"
+    );
+}
+
+#[test]
+fn single_use_enforcement_allows_distinct_challenges() {
+    let rp = RelyingParty::new(RP_ID, ORIGIN, "Test RP").enforce_single_use_challenges(true);
+    let fixture = Fixture::new();
+
+    // Two different challenges must both succeed.
+    let ch1 = Challenge::new().unwrap();
+    let r1 = fixture.make_registration_response(
+        &ch1.bytes,
+        "webauthn.create",
+        ORIGIN,
+        RP_ID,
+        0x41,
+        1,
+        "none",
+    );
+    rp.verify_registration(&ch1, &r1, b"uid1")
+        .expect("first registration with distinct challenge should succeed");
+
+    let fixture2 = Fixture::new();
+    let ch2 = Challenge::new().unwrap();
+    let r2 = fixture2.make_registration_response(
+        &ch2.bytes,
+        "webauthn.create",
+        ORIGIN,
+        RP_ID,
+        0x41,
+        1,
+        "none",
+    );
+    rp.verify_registration(&ch2, &r2, b"uid2")
+        .expect("second registration with a different challenge should succeed");
+}
+
 // ─── Multi-origin tests ───────────────────────────────────────────────────────
 
 #[test]

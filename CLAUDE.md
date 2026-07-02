@@ -284,9 +284,10 @@ Canonical spec: https://www.w3.org/TR/webauthn-3/
 | Limitation | Notes |
 |------------|-------|
 | Cert chain trust anchors (all formats) | `x5c` chain order is verified; root checked against `RelyingParty::trust_anchors` when configured, otherwise accepted as `Basic`. No FIDO MDS integration — authenticator model/provenance cannot be verified. |
-| Challenge single-use enforcement | The caller is responsible — the library does not maintain a used-challenge set |
 | No FIDO Metadata Service | Authenticator model/provenance cannot be verified |
 | UV flag optional | Off by default; enable with `RelyingParty::new(...).require_user_verification(true)` |
+
+Challenge single-use enforcement is now opt-in via `RelyingParty::enforce_single_use_challenges(true)`. When enabled, the library maintains an `Arc<Mutex<HashSet<Vec<u8>>>>` of consumed challenge bytes shared across all clones of the instance. Without this opt-in, the caller is responsible for deleting each challenge from their session store after it is used.
 
 ---
 

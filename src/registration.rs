@@ -10,6 +10,8 @@
 //! Spec: <https://www.w3.org/TR/webauthn-2/#sctn-registering-a-new-credential>
 
 use ciborium::value::Value;
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
 use crate::algorithm::{COSE_EDDSA, COSE_ES256, COSE_ES384, COSE_RS256};
@@ -127,6 +129,17 @@ pub struct RelyingParty {
     ///
     /// Use [`RelyingParty::trust_anchors`] to set this at construction time.
     pub trust_anchors: Vec<Vec<u8>>,
+
+    /// Opt-in set of challenge bytes already consumed by a completed ceremony.
+    ///
+    /// `None` when single-use enforcement is disabled (the default). Enable
+    /// via [`RelyingParty::enforce_single_use_challenges`].
+    ///
+    /// The `Arc` lets `Clone`d instances share the same tracking set so all
+    /// ceremony paths that use copies of the same `RelyingParty` (e.g. behind
+    /// an `Arc<RelyingParty>` in an async web handler) enforce the policy
+    /// collectively rather than independently.
+    pub used_challenges: Option<Arc<Mutex<HashSet<Vec<u8>>>>>,
 }
 
 impl RelyingParty {
@@ -147,6 +160,7 @@ impl RelyingParty {
             require_backup_eligible: false,
             reject_backup_eligible: false,
             trust_anchors: vec![],
+            used_challenges: None,
         }
     }
 
@@ -176,6 +190,7 @@ impl RelyingParty {
             require_backup_eligible: false,
             reject_backup_eligible: false,
             trust_anchors: vec![],
+            used_challenges: None,
         }
     }
 
@@ -299,6 +314,45 @@ impl RelyingParty {
         self
     }
 
+    /// Opt in to server-side single-use challenge enforcement.
+    ///
+    /// When `true`, the library maintains an internal set of challenge bytes
+    /// that have already been processed. After the challenge passes the normal
+    /// expiry and binding checks, it is looked up in this set:
+    ///
+    /// - If already present → the ceremony fails with
+    ///   [`crate::error::WebAuthnError::ChallengePreviouslyUsed`].
+    /// - If absent → it is inserted and the ceremony continues.
+    ///
+    /// A challenge is consumed even if later verification steps (e.g.
+    /// signature check) fail, so a failed ceremony with a valid challenge
+    /// cannot be retried with the same challenge bytes.
+    ///
+    /// The tracking set is shared across `Clone`d instances of this
+    /// `RelyingParty` via `Arc`, so all ceremony paths using copies of the
+    /// same instance enforce the policy collectively.
+    ///
+    /// When `false` (the default), single-use enforcement is the caller's
+    /// responsibility — track issued challenges in your session store and
+    /// delete each one after it is presented to a ceremony.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use webauthn::RelyingParty;
+    ///
+    /// let rp = RelyingParty::new("example.com", "https://example.com", "My Service")
+    ///     .enforce_single_use_challenges(true);
+    /// ```
+    pub fn enforce_single_use_challenges(mut self, enforce: bool) -> Self {
+        self.used_challenges = if enforce {
+            Some(Arc::new(Mutex::new(HashSet::new())))
+        } else {
+            None
+        };
+        self
+    }
+
     /// Verify a registration ceremony response (W3C WebAuthn §7.1).
     ///
     /// Call this after the client returns an `AuthenticatorAttestationResponse`.
@@ -364,6 +418,21 @@ fn verify_registration_inner(
         &rp.allowed_origins,
         rp.reject_cross_origin,
     )?;
+
+    // ── Single-use challenge enforcement (opt-in) ─────────────────────────────
+    // After the challenge has passed the expiry and binding checks above,
+    // record it in the used-challenge set if enforcement is enabled. A
+    // challenge is consumed even if subsequent steps fail — this prevents
+    // retrying the same challenge with a corrected payload.
+    if let Some(ref used) = rp.used_challenges {
+        let mut set = used
+            .lock()
+            .expect("used_challenges mutex is poisoned — a previous ceremony panicked");
+        if set.contains(&challenge.bytes) {
+            return Err(WebAuthnError::ChallengePreviouslyUsed);
+        }
+        set.insert(challenge.bytes.clone());
+    }
 
     // ── §7.1 step 11 ──────────────────────────────────────────────────────────
     // Let hash be SHA-256(clientDataJSON bytes).

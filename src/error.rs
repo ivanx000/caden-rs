@@ -82,6 +82,15 @@ pub enum WebAuthnError {
     #[error("Challenge expired")]
     ChallengeExpired,
 
+    /// The challenge has already been consumed by a previous ceremony.
+    ///
+    /// This error is only returned when the relying party has opted in to
+    /// single-use challenge enforcement via
+    /// [`crate::RelyingParty::enforce_single_use_challenges`]. Issue a fresh
+    /// challenge and restart the ceremony.
+    #[error("Challenge was already used in a previous ceremony")]
+    ChallengePreviouslyUsed,
+
     /// The COSE algorithm identifier is not supported by this library.
     ///
     /// The `i64` is the raw COSE algorithm integer (e.g. `-7` = ES256, `-257` = RS256).

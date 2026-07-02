@@ -87,8 +87,10 @@
 //!   code. Every error path returns a typed [`WebAuthnError`] variant.
 //! - **No custom crypto** — signature verification, hashing, and random number
 //!   generation are all inside `ring`'s audited boundary.
-//! - **Caller responsibilities** — challenge single-use enforcement, credential
-//!   uniqueness checks, and FIDO Metadata Service integration are out of scope.
+//! - **Caller responsibilities** — credential uniqueness checks and FIDO
+//!   Metadata Service integration are out of scope. Challenge single-use
+//!   enforcement is opt-in via
+//!   [`RelyingParty::enforce_single_use_challenges`].
 //!
 //! > **Learning project** — this library is a portfolio demonstration of a correct
 //! > WebAuthn implementation. For production use, consider
