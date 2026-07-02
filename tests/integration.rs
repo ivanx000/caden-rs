@@ -1896,6 +1896,7 @@ fn no_panic_on_random_authentication_input() {
         rp_id: RP_ID.to_string(),
         created_at: SystemTime::now(),
         backup_eligible: false,
+        backup_state: false,
     };
 
     let mut state: u64 = 0x1234_5678_9ABC_DEF0;

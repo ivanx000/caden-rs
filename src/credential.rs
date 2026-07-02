@@ -128,6 +128,13 @@ pub struct Credential {
     /// as a credential substitution attempt and rejected with
     /// [`crate::error::WebAuthnError::BackupEligibilityChanged`].
     pub backup_eligible: bool,
+
+    /// Whether this credential is currently backed up (BS flag, §6.1 bit 4).
+    ///
+    /// This value may change between ceremonies as the user's backup state
+    /// varies. After a successful authentication ceremony, update this field
+    /// to `AuthenticationResult.backup_state` before persisting the credential.
+    pub backup_state: bool,
 }
 
 // ─── Wire-format input types ──────────────────────────────────────────────────
@@ -374,6 +381,7 @@ mod serde_tests {
             rp_id: "example.com".to_string(),
             created_at: epoch_plus(1_700_000_000),
             backup_eligible: true,
+            backup_state: true,
         };
         let json = serde_json::to_string(&cred).expect("test setup");
         let back: Credential = serde_json::from_str(&json).expect("test setup");
@@ -383,5 +391,6 @@ mod serde_tests {
         assert_eq!(back.rp_id, cred.rp_id);
         assert_eq!(back.created_at, cred.created_at);
         assert_eq!(back.backup_eligible, cred.backup_eligible);
+        assert_eq!(back.backup_state, cred.backup_state);
     }
 }

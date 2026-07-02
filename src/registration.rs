@@ -528,6 +528,8 @@ fn verify_registration_inner(
     // ── §7.1 step 25 ──────────────────────────────────────────────────────────
     // Build the Credential. The caller must persist this object.
     // backup_eligible is stored so authentication can enforce BE immutability.
+    // backup_state reflects the credential's sync state at registration time;
+    // callers must update it after each successful authentication.
     let credential = Credential {
         id: cred_data.credential_id,
         public_key,
@@ -536,6 +538,7 @@ fn verify_registration_inner(
         rp_id: rp.id.clone(),
         created_at: SystemTime::now(),
         backup_eligible,
+        backup_state,
     };
 
     Ok(RegistrationResult {
