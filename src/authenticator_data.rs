@@ -631,7 +631,7 @@ mod tests {
             (Value::Integer((-3i64).into()), Value::Bytes(y.to_vec())),
         ]);
         let mut buf = Vec::new();
-        ciborium::into_writer(&cose, &mut buf).unwrap();
+        ciborium::into_writer(&cose, &mut buf).expect("test setup");
         buf
     }
 
@@ -646,7 +646,7 @@ mod tests {
             (Value::Integer((-2i64).into()), Value::Bytes(e.to_vec())), // e
         ]);
         let mut buf = Vec::new();
-        ciborium::into_writer(&cose, &mut buf).unwrap();
+        ciborium::into_writer(&cose, &mut buf).expect("test setup");
         buf
     }
 
@@ -663,7 +663,7 @@ mod tests {
     #[test]
     fn parses_be_flag() {
         let data = make_auth_data(&[0u8; 32], FLAG_UP | FLAG_BE, 0, None);
-        let parsed = parse_authenticator_data(&data).unwrap();
+        let parsed = parse_authenticator_data(&data).expect("test setup");
         assert!(parsed.flags.backup_eligible);
         assert!(!parsed.flags.backup_state);
     }
@@ -671,7 +671,7 @@ mod tests {
     #[test]
     fn parses_be_and_bs_flags() {
         let data = make_auth_data(&[0u8; 32], FLAG_UP | FLAG_BE | FLAG_BS, 0, None);
-        let parsed = parse_authenticator_data(&data).unwrap();
+        let parsed = parse_authenticator_data(&data).expect("test setup");
         assert!(parsed.flags.backup_eligible);
         assert!(parsed.flags.backup_state);
     }
@@ -680,7 +680,7 @@ mod tests {
     fn rejects_bs_without_be() {
         // §6.1: BS set without BE is an invalid combination.
         let data = make_auth_data(&[0u8; 32], FLAG_UP | FLAG_BS, 0, None);
-        let err = parse_authenticator_data(&data).unwrap_err();
+        let err = parse_authenticator_data(&data).expect_err("expected error");
         assert!(matches!(err, WebAuthnError::InvalidAuthenticatorData(_)));
         assert!(err.to_string().contains("BS"));
     }
@@ -718,7 +718,7 @@ mod tests {
     fn parses_minimal_auth_data() {
         let rp_hash = [0xABu8; 32];
         let data = make_auth_data(&rp_hash, FLAG_UP, 42, None);
-        let parsed = parse_authenticator_data(&data).unwrap();
+        let parsed = parse_authenticator_data(&data).expect("test setup");
 
         assert_eq!(parsed.rp_id_hash, rp_hash);
         assert!(parsed.flags.user_present);
@@ -731,7 +731,7 @@ mod tests {
     #[test]
     fn parses_up_and_uv_flags() {
         let data = make_auth_data(&[0u8; 32], FLAG_UP | FLAG_UV, 0, None);
-        let parsed = parse_authenticator_data(&data).unwrap();
+        let parsed = parse_authenticator_data(&data).expect("test setup");
         assert!(parsed.flags.user_present);
         assert!(parsed.flags.user_verified);
     }
@@ -739,7 +739,7 @@ mod tests {
     #[test]
     fn raw_field_equals_input_bytes() {
         let data = make_auth_data(&[0u8; 32], FLAG_UP, 7, None);
-        let parsed = parse_authenticator_data(&data).unwrap();
+        let parsed = parse_authenticator_data(&data).expect("test setup");
         assert_eq!(parsed.raw, data);
     }
 
@@ -756,7 +756,7 @@ mod tests {
     fn at_flag_set_but_no_data_returns_error() {
         // AT flag set but no bytes after the 37-byte header.
         let data = make_auth_data(&[0u8; 32], FLAG_UP | FLAG_AT, 0, None);
-        let err = parse_authenticator_data(&data).unwrap_err();
+        let err = parse_authenticator_data(&data).expect_err("expected error");
         assert!(matches!(err, WebAuthnError::InvalidAuthenticatorData(_)));
     }
 
@@ -767,7 +767,7 @@ mod tests {
         let pk = make_cose_key_cbor(&[0x01u8; 32], &[0x02u8; 32]);
         let cred_data = make_attested_cred_data(&[], &pk); // empty cred ID
         let data = make_auth_data(&[0u8; 32], FLAG_UP | FLAG_AT, 0, Some(&cred_data));
-        let err = parse_authenticator_data(&data).unwrap_err();
+        let err = parse_authenticator_data(&data).expect_err("expected error");
         assert!(matches!(err, WebAuthnError::InvalidAuthenticatorData(_)));
         // Verify the message is specific.
         assert!(err.to_string().contains("0"));
@@ -781,7 +781,7 @@ mod tests {
         cred_data.extend_from_slice(&oversized_len.to_be_bytes());
         // Don't append any bytes — the length check fires before the buffer read.
         let data = make_auth_data(&[0u8; 32], FLAG_UP | FLAG_AT, 0, Some(&cred_data));
-        let err = parse_authenticator_data(&data).unwrap_err();
+        let err = parse_authenticator_data(&data).expect_err("expected error");
         assert!(matches!(err, WebAuthnError::InvalidAuthenticatorData(_)));
         assert!(err.to_string().contains("1024"));
     }
@@ -792,7 +792,7 @@ mod tests {
         cred_data.extend_from_slice(&50u16.to_be_bytes()); // claims 50-byte ID
         cred_data.extend_from_slice(&[0xABu8; 10]); // only 10 bytes present
         let data = make_auth_data(&[0u8; 32], FLAG_UP | FLAG_AT, 0, Some(&cred_data));
-        let err = parse_authenticator_data(&data).unwrap_err();
+        let err = parse_authenticator_data(&data).expect_err("expected error");
         assert!(matches!(err, WebAuthnError::InvalidAuthenticatorData(_)));
     }
 
@@ -803,7 +803,7 @@ mod tests {
         cred_data.push(0xAB); // credential ID (1 byte)
                               // No CBOR bytes follow.
         let data = make_auth_data(&[0u8; 32], FLAG_UP | FLAG_AT, 0, Some(&cred_data));
-        let err = parse_authenticator_data(&data).unwrap_err();
+        let err = parse_authenticator_data(&data).expect_err("expected error");
         assert!(matches!(err, WebAuthnError::InvalidAuthenticatorData(_)));
     }
 
@@ -817,14 +817,14 @@ mod tests {
                 .collect(),
         );
         let mut buf = Vec::new();
-        ciborium::into_writer(&map, &mut buf).unwrap();
+        ciborium::into_writer(&map, &mut buf).expect("test setup");
         buf
     }
 
     #[test]
     fn ed_flag_not_set_produces_none_extensions() {
         let data = make_auth_data(&[0u8; 32], FLAG_UP, 1, None);
-        let parsed = parse_authenticator_data(&data).unwrap();
+        let parsed = parse_authenticator_data(&data).expect("test setup");
         assert!(parsed.extensions.is_none());
     }
 
@@ -833,8 +833,8 @@ mod tests {
         let ext_cbor = make_extension_cbor(&[("appid", Value::Bool(true))]);
         let mut data = make_auth_data(&[0u8; 32], FLAG_UP | FLAG_ED, 0, None);
         data.extend_from_slice(&ext_cbor);
-        let parsed = parse_authenticator_data(&data).unwrap();
-        let exts = parsed.extensions.unwrap();
+        let parsed = parse_authenticator_data(&data).expect("test setup");
+        let exts = parsed.extensions.expect("test setup");
         assert_eq!(exts.get("appid"), Some(&Value::Bool(true)));
     }
 
@@ -847,8 +847,8 @@ mod tests {
         ]);
         let mut data = make_auth_data(&[0u8; 32], FLAG_UP | FLAG_ED, 0, None);
         data.extend_from_slice(&ext_cbor);
-        let parsed = parse_authenticator_data(&data).unwrap();
-        let exts = parsed.extensions.unwrap();
+        let parsed = parse_authenticator_data(&data).expect("test setup");
+        let exts = parsed.extensions.expect("test setup");
         assert_eq!(exts.get("credProps"), Some(&cred_props));
         assert_eq!(exts.get("appid"), Some(&Value::Bool(false)));
     }
@@ -862,9 +862,9 @@ mod tests {
         let mut combined = cred_data;
         combined.extend_from_slice(&ext_cbor);
         let data = make_auth_data(&[0u8; 32], FLAG_UP | FLAG_AT | FLAG_ED, 0, Some(&combined));
-        let parsed = parse_authenticator_data(&data).unwrap();
+        let parsed = parse_authenticator_data(&data).expect("test setup");
         assert!(parsed.attested_credential_data.is_some());
-        let exts = parsed.extensions.unwrap();
+        let exts = parsed.extensions.expect("test setup");
         assert_eq!(exts.get("appid"), Some(&Value::Bool(true)));
     }
 
@@ -872,7 +872,7 @@ mod tests {
     fn ed_flag_set_with_no_bytes_returns_error() {
         // ED set but buffer ends at the 37-byte fixed header — no extension bytes present.
         let data = make_auth_data(&[0u8; 32], FLAG_UP | FLAG_ED, 0, None);
-        let err = parse_authenticator_data(&data).unwrap_err();
+        let err = parse_authenticator_data(&data).expect_err("expected error");
         assert!(matches!(err, WebAuthnError::InvalidAuthenticatorData(_)));
         assert!(err.to_string().contains("ED"));
     }
@@ -881,7 +881,7 @@ mod tests {
     fn ed_flag_set_with_malformed_cbor_returns_error() {
         let mut data = make_auth_data(&[0u8; 32], FLAG_UP | FLAG_ED, 0, None);
         data.extend_from_slice(&[0xFF, 0xFF]); // not valid CBOR
-        let err = parse_authenticator_data(&data).unwrap_err();
+        let err = parse_authenticator_data(&data).expect_err("expected error");
         assert!(matches!(err, WebAuthnError::CborDecodeError(_)));
     }
 
@@ -891,9 +891,9 @@ mod tests {
         // Encode a CBOR integer instead of a map.
         let not_a_map = Value::Integer(42i64.into());
         let mut cbor_buf = Vec::new();
-        ciborium::into_writer(&not_a_map, &mut cbor_buf).unwrap();
+        ciborium::into_writer(&not_a_map, &mut cbor_buf).expect("test setup");
         data.extend_from_slice(&cbor_buf);
-        let err = parse_authenticator_data(&data).unwrap_err();
+        let err = parse_authenticator_data(&data).expect_err("expected error");
         assert!(matches!(err, WebAuthnError::InvalidAuthenticatorData(_)));
         assert!(err.to_string().contains("map"));
     }
@@ -905,7 +905,7 @@ mod tests {
         let x = vec![0x01u8; 32];
         let y = vec![0x02u8; 32];
         let cbor = make_cose_key_cbor(&x, &y);
-        let key = parse_cose_key(&cbor).unwrap();
+        let key = parse_cose_key(&cbor).expect("test setup");
         match key {
             CoseKey::EC2 {
                 alg,
@@ -931,8 +931,8 @@ mod tests {
             (Value::Integer((-3i64).into()), Value::Bytes(vec![0u8; 32])),
         ]);
         let mut buf = Vec::new();
-        ciborium::into_writer(&cose, &mut buf).unwrap();
-        let err = parse_cose_key(&buf).unwrap_err();
+        ciborium::into_writer(&cose, &mut buf).expect("test setup");
+        let err = parse_cose_key(&buf).expect_err("expected error");
         assert!(matches!(err, WebAuthnError::InvalidPublicKey(_)));
         assert!(err.to_string().contains("kty"));
     }
@@ -946,8 +946,8 @@ mod tests {
             (Value::Integer((-3i64).into()), Value::Bytes(vec![0u8; 32])),
         ]);
         let mut buf = Vec::new();
-        ciborium::into_writer(&cose, &mut buf).unwrap();
-        let err = parse_cose_key(&buf).unwrap_err();
+        ciborium::into_writer(&cose, &mut buf).expect("test setup");
+        let err = parse_cose_key(&buf).expect_err("expected error");
         assert!(matches!(err, WebAuthnError::InvalidPublicKey(_)));
         assert!(err.to_string().contains("alg"));
     }
@@ -961,8 +961,8 @@ mod tests {
             (Value::Integer((-3i64).into()), Value::Bytes(vec![0u8; 32])),
         ]);
         let mut buf = Vec::new();
-        ciborium::into_writer(&cose, &mut buf).unwrap();
-        let err = parse_cose_key(&buf).unwrap_err();
+        ciborium::into_writer(&cose, &mut buf).expect("test setup");
+        let err = parse_cose_key(&buf).expect_err("expected error");
         assert!(matches!(err, WebAuthnError::InvalidPublicKey(_)));
         assert!(err.to_string().contains("crv"));
     }
@@ -976,8 +976,8 @@ mod tests {
             (Value::Integer((-3i64).into()), Value::Bytes(vec![0u8; 32])),
         ]);
         let mut buf = Vec::new();
-        ciborium::into_writer(&cose, &mut buf).unwrap();
-        let err = parse_cose_key(&buf).unwrap_err();
+        ciborium::into_writer(&cose, &mut buf).expect("test setup");
+        let err = parse_cose_key(&buf).expect_err("expected error");
         assert!(matches!(err, WebAuthnError::InvalidPublicKey(_)));
         assert!(err.to_string().contains("x"));
     }
@@ -991,8 +991,8 @@ mod tests {
             (Value::Integer((-2i64).into()), Value::Bytes(vec![0u8; 32])),
         ]);
         let mut buf = Vec::new();
-        ciborium::into_writer(&cose, &mut buf).unwrap();
-        let err = parse_cose_key(&buf).unwrap_err();
+        ciborium::into_writer(&cose, &mut buf).expect("test setup");
+        let err = parse_cose_key(&buf).expect_err("expected error");
         assert!(matches!(err, WebAuthnError::InvalidPublicKey(_)));
         assert!(err.to_string().contains("y"));
     }
@@ -1005,8 +1005,8 @@ mod tests {
             (Value::Integer(3i64.into()), Value::Integer((-7i64).into())),
         ]);
         let mut buf = Vec::new();
-        ciborium::into_writer(&cose, &mut buf).unwrap();
-        let err = parse_cose_key(&buf).unwrap_err();
+        ciborium::into_writer(&cose, &mut buf).expect("test setup");
+        let err = parse_cose_key(&buf).expect_err("expected error");
         assert!(matches!(err, WebAuthnError::InvalidPublicKey(ref m) if m.contains("4")));
     }
 
@@ -1014,7 +1014,7 @@ mod tests {
     fn parse_cose_key_rejects_unsupported_crv() {
         // alg=-7 (ES256) with crv=2 (P-384) is an alg/curve mismatch — ES256 requires crv=1.
         let cbor = make_cose_key_cbor_with_alg_crv(&[0x01u8; 32], &[0x02u8; 32], -7, 2);
-        let err = parse_cose_key(&cbor).unwrap_err();
+        let err = parse_cose_key(&cbor).expect_err("expected error");
         assert!(matches!(err, WebAuthnError::InvalidPublicKey(ref m) if m.contains("2")));
     }
 
@@ -1023,7 +1023,7 @@ mod tests {
         let x = vec![0x01u8; 48];
         let y = vec![0x02u8; 48];
         let cbor = make_cose_key_cbor_with_alg_crv(&x, &y, -35, 2);
-        let key = parse_cose_key(&cbor).unwrap();
+        let key = parse_cose_key(&cbor).expect("test setup");
         match key {
             CoseKey::EC2 {
                 alg,
@@ -1043,14 +1043,14 @@ mod tests {
     #[test]
     fn parse_cose_key_es384_rejects_short_x_coordinate() {
         let cbor = make_cose_key_cbor_with_alg_crv(&[0x01u8; 32], &[0x02u8; 48], -35, 2);
-        let err = parse_cose_key(&cbor).unwrap_err();
+        let err = parse_cose_key(&cbor).expect_err("expected error");
         assert!(matches!(err, WebAuthnError::InvalidPublicKey(ref m) if m.contains("32")));
     }
 
     #[test]
     fn parse_cose_key_es384_rejects_short_y_coordinate() {
         let cbor = make_cose_key_cbor_with_alg_crv(&[0x01u8; 48], &[0x02u8; 32], -35, 2);
-        let err = parse_cose_key(&cbor).unwrap_err();
+        let err = parse_cose_key(&cbor).expect_err("expected error");
         assert!(matches!(err, WebAuthnError::InvalidPublicKey(ref m) if m.contains("32")));
     }
 
@@ -1058,28 +1058,28 @@ mod tests {
     fn parse_cose_key_es384_rejects_wrong_crv() {
         // alg=-35 (ES384) with crv=1 (P-256) is an alg/curve mismatch — ES384 requires crv=2.
         let cbor = make_cose_key_cbor_with_alg_crv(&[0x01u8; 48], &[0x02u8; 48], -35, 1);
-        let err = parse_cose_key(&cbor).unwrap_err();
+        let err = parse_cose_key(&cbor).expect_err("expected error");
         assert!(matches!(err, WebAuthnError::InvalidPublicKey(ref m) if m.contains("1")));
     }
 
     #[test]
     fn parse_cose_key_rejects_short_x_coordinate() {
         let cbor = make_cose_key_cbor(&[0x01u8; 31], &[0x02u8; 32]);
-        let err = parse_cose_key(&cbor).unwrap_err();
+        let err = parse_cose_key(&cbor).expect_err("expected error");
         assert!(matches!(err, WebAuthnError::InvalidPublicKey(ref m) if m.contains("31")));
     }
 
     #[test]
     fn parse_cose_key_rejects_short_y_coordinate() {
         let cbor = make_cose_key_cbor(&[0x01u8; 32], &[0x02u8; 10]);
-        let err = parse_cose_key(&cbor).unwrap_err();
+        let err = parse_cose_key(&cbor).expect_err("expected error");
         assert!(matches!(err, WebAuthnError::InvalidPublicKey(ref m) if m.contains("10")));
     }
 
     #[test]
     fn parse_cose_key_rejects_long_x_coordinate() {
         let cbor = make_cose_key_cbor(&[0x01u8; 33], &[0x02u8; 32]);
-        let err = parse_cose_key(&cbor).unwrap_err();
+        let err = parse_cose_key(&cbor).expect_err("expected error");
         assert!(matches!(err, WebAuthnError::InvalidPublicKey(ref m) if m.contains("33")));
     }
 
@@ -1095,8 +1095,8 @@ mod tests {
             (Value::Integer((-3i64).into()), Value::Bytes(vec![0u8; 32])),
         ]);
         let mut buf = Vec::new();
-        ciborium::into_writer(&cose, &mut buf).unwrap();
-        let err = parse_cose_key(&buf).unwrap_err();
+        ciborium::into_writer(&cose, &mut buf).expect("test setup");
+        let err = parse_cose_key(&buf).expect_err("expected error");
         assert!(matches!(err, WebAuthnError::InvalidPublicKey(ref m) if m.contains("duplicate")));
     }
 
@@ -1105,14 +1105,14 @@ mod tests {
         // A CBOR integer instead of a map.
         let cose = Value::Integer(42i64.into());
         let mut buf = Vec::new();
-        ciborium::into_writer(&cose, &mut buf).unwrap();
-        let err = parse_cose_key(&buf).unwrap_err();
+        ciborium::into_writer(&cose, &mut buf).expect("test setup");
+        let err = parse_cose_key(&buf).expect_err("expected error");
         assert!(matches!(err, WebAuthnError::InvalidPublicKey(_)));
     }
 
     #[test]
     fn parse_cose_key_rejects_empty_input() {
-        let err = parse_cose_key(&[]).unwrap_err();
+        let err = parse_cose_key(&[]).expect_err("expected error");
         assert!(matches!(err, WebAuthnError::CborDecodeError(_)));
     }
 
@@ -1123,7 +1123,7 @@ mod tests {
         let n = vec![0x01u8; 256]; // 2048-bit modulus (high bit clear — no DER pad needed here)
         let e = vec![0x01u8, 0x00, 0x01];
         let cbor = make_rsa_cose_key_cbor(&n, &e);
-        let key = parse_cose_key(&cbor).unwrap();
+        let key = parse_cose_key(&cbor).expect("test setup");
         match key {
             CoseKey::RSA { alg, n: kn, e: ke } => {
                 assert_eq!(alg, -257);
@@ -1140,7 +1140,7 @@ mod tests {
         let n = vec![0x01u8; 255];
         let e = vec![0x01u8, 0x00, 0x01];
         let cbor = make_rsa_cose_key_cbor(&n, &e);
-        let err = parse_cose_key(&cbor).unwrap_err();
+        let err = parse_cose_key(&cbor).expect_err("expected error");
         assert!(matches!(err, WebAuthnError::InvalidPublicKey(ref m) if m.contains("255")));
     }
 
@@ -1159,8 +1159,8 @@ mod tests {
             ),
         ]);
         let mut buf = Vec::new();
-        ciborium::into_writer(&cose, &mut buf).unwrap();
-        let err = parse_cose_key(&buf).unwrap_err();
+        ciborium::into_writer(&cose, &mut buf).expect("test setup");
+        let err = parse_cose_key(&buf).expect_err("expected error");
         assert!(matches!(err, WebAuthnError::InvalidPublicKey(ref m) if m.contains("n")));
     }
 
@@ -1179,8 +1179,8 @@ mod tests {
             // -2 (e) absent
         ]);
         let mut buf = Vec::new();
-        ciborium::into_writer(&cose, &mut buf).unwrap();
-        let err = parse_cose_key(&buf).unwrap_err();
+        ciborium::into_writer(&cose, &mut buf).expect("test setup");
+        let err = parse_cose_key(&buf).expect_err("expected error");
         assert!(matches!(err, WebAuthnError::InvalidPublicKey(ref m) if m.contains("e")));
     }
 
@@ -1200,8 +1200,8 @@ mod tests {
             ),
         ]);
         let mut buf = Vec::new();
-        ciborium::into_writer(&cose, &mut buf).unwrap();
-        let err = parse_cose_key(&buf).unwrap_err();
+        ciborium::into_writer(&cose, &mut buf).expect("test setup");
+        let err = parse_cose_key(&buf).expect_err("expected error");
         assert!(matches!(err, WebAuthnError::UnsupportedAlgorithm(-7)));
     }
 }

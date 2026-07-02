@@ -1366,9 +1366,10 @@ mod tests {
         use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_ASN1_SIGNING};
 
         let rng = SystemRandom::new();
-        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng).unwrap();
+        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng)
+            .expect("test setup");
         let kp = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, pkcs8.as_ref(), &rng)
-            .unwrap();
+            .expect("test setup");
         let att_pub = kp.public_key().as_ref();
         let cert = make_fake_p256_cert(att_pub);
 
@@ -1379,7 +1380,7 @@ mod tests {
         let mut msg = Vec::new();
         msg.extend_from_slice(auth_data);
         msg.extend_from_slice(&client_data_hash);
-        let sig = kp.sign(&rng, &msg).unwrap();
+        let sig = kp.sign(&rng, &msg).expect("test setup");
 
         let stmt = Value::Map(vec![
             (
@@ -1470,9 +1471,10 @@ mod tests {
         use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_ASN1_SIGNING};
 
         let rng = SystemRandom::new();
-        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng).unwrap();
+        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng)
+            .expect("test setup");
         let kp = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, pkcs8.as_ref(), &rng)
-            .unwrap();
+            .expect("test setup");
         let pub_bytes = kp.public_key().as_ref(); // 0x04 || x || y
 
         let x = pub_bytes[1..33].to_vec();
@@ -1486,7 +1488,7 @@ mod tests {
         verification_data.extend_from_slice(auth_data);
         verification_data.extend_from_slice(&client_data_hash);
 
-        let sig = kp.sign(&rng, &verification_data).unwrap();
+        let sig = kp.sign(&rng, &verification_data).expect("test setup");
 
         let stmt = Value::Map(vec![
             (
@@ -1509,9 +1511,10 @@ mod tests {
         use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_ASN1_SIGNING};
 
         let rng = SystemRandom::new();
-        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng).unwrap();
+        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng)
+            .expect("test setup");
         let kp = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, pkcs8.as_ref(), &rng)
-            .unwrap();
+            .expect("test setup");
         let pub_bytes = kp.public_key().as_ref();
         let x = pub_bytes[1..33].to_vec();
         let y = pub_bytes[33..65].to_vec();
@@ -1604,20 +1607,20 @@ mod tests {
         let rng = SystemRandom::new();
 
         // Attestation keypair (signs the verificationData).
-        let att_pkcs8 =
-            EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng).unwrap();
+        let att_pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng)
+            .expect("test setup");
         let att_kp =
             EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, att_pkcs8.as_ref(), &rng)
-                .unwrap();
+                .expect("test setup");
         let att_pub = att_kp.public_key().as_ref(); // 65 bytes: 0x04 || x || y
         let cert = make_fake_p256_cert(att_pub);
 
         // Credential keypair (separate from attestation key).
-        let cred_pkcs8 =
-            EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng).unwrap();
+        let cred_pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng)
+            .expect("test setup");
         let cred_kp =
             EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, cred_pkcs8.as_ref(), &rng)
-                .unwrap();
+                .expect("test setup");
         let cred_pub = cred_kp.public_key().as_ref();
         let credential_public_key = PublicKey::ES256 {
             x: cred_pub[1..33].to_vec(),
@@ -1639,7 +1642,7 @@ mod tests {
         verification_data.extend_from_slice(credential_id);
         verification_data.extend_from_slice(cred_pub);
 
-        let sig = att_kp.sign(&rng, &verification_data).unwrap();
+        let sig = att_kp.sign(&rng, &verification_data).expect("test setup");
 
         let stmt = Value::Map(vec![
             (
@@ -1670,18 +1673,18 @@ mod tests {
         use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_ASN1_SIGNING};
 
         let rng = SystemRandom::new();
-        let att_pkcs8 =
-            EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng).unwrap();
+        let att_pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng)
+            .expect("test setup");
         let att_kp =
             EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, att_pkcs8.as_ref(), &rng)
-                .unwrap();
+                .expect("test setup");
         let cert = make_fake_p256_cert(att_kp.public_key().as_ref());
 
-        let cred_pkcs8 =
-            EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng).unwrap();
+        let cred_pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng)
+            .expect("test setup");
         let cred_kp =
             EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, cred_pkcs8.as_ref(), &rng)
-                .unwrap();
+                .expect("test setup");
         let cred_pub = cred_kp.public_key().as_ref();
         let credential_public_key = PublicKey::ES256 {
             x: cred_pub[1..33].to_vec(),
@@ -1727,9 +1730,10 @@ mod tests {
         let rng = SystemRandom::new();
 
         // In android-key, the attestation cert key == the credential key.
-        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng).unwrap();
+        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng)
+            .expect("test setup");
         let kp = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, pkcs8.as_ref(), &rng)
-            .unwrap();
+            .expect("test setup");
         let pub_bytes = kp.public_key().as_ref(); // 65 bytes: 0x04 || x || y
         let cert = make_fake_p256_cert(pub_bytes);
 
@@ -1745,7 +1749,7 @@ mod tests {
         verification_data.extend_from_slice(auth_data);
         verification_data.extend_from_slice(&client_data_hash);
 
-        let sig = kp.sign(&rng, &verification_data).unwrap();
+        let sig = kp.sign(&rng, &verification_data).expect("test setup");
 
         let stmt = Value::Map(vec![
             (
@@ -1780,9 +1784,10 @@ mod tests {
         use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_ASN1_SIGNING};
 
         let rng = SystemRandom::new();
-        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng).unwrap();
+        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng)
+            .expect("test setup");
         let kp = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, pkcs8.as_ref(), &rng)
-            .unwrap();
+            .expect("test setup");
         let pub_bytes = kp.public_key().as_ref();
         let cert = make_fake_p256_cert(pub_bytes);
 
@@ -1864,18 +1869,18 @@ mod tests {
         let rng = SystemRandom::new();
 
         // Cert key and credential key are two different keypairs — mismatch.
-        let cert_pkcs8 =
-            EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng).unwrap();
+        let cert_pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng)
+            .expect("test setup");
         let cert_kp =
             EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, cert_pkcs8.as_ref(), &rng)
-                .unwrap();
+                .expect("test setup");
         let cert = make_fake_p256_cert(cert_kp.public_key().as_ref());
 
-        let cred_pkcs8 =
-            EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng).unwrap();
+        let cred_pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng)
+            .expect("test setup");
         let cred_kp =
             EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, cred_pkcs8.as_ref(), &rng)
-                .unwrap();
+                .expect("test setup");
         let cred_pub = cred_kp.public_key().as_ref();
         let credential_public_key = PublicKey::ES256 {
             x: cred_pub[1..33].to_vec(),
@@ -1957,9 +1962,10 @@ mod tests {
         use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_ASN1_SIGNING};
 
         let rng = SystemRandom::new();
-        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng).unwrap();
+        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng)
+            .expect("test setup");
         let kp = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, pkcs8.as_ref(), &rng)
-            .unwrap();
+            .expect("test setup");
         let pub_bytes = kp.public_key().as_ref();
         let credential_public_key = PublicKey::ES256 {
             x: pub_bytes[1..33].to_vec(),
@@ -1998,18 +2004,18 @@ mod tests {
         let rng = SystemRandom::new();
 
         // Cert key and credential key are two different keypairs.
-        let cert_pkcs8 =
-            EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng).unwrap();
+        let cert_pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng)
+            .expect("test setup");
         let cert_kp =
             EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, cert_pkcs8.as_ref(), &rng)
-                .unwrap();
+                .expect("test setup");
         let cert_pub = cert_kp.public_key().as_ref();
 
-        let cred_pkcs8 =
-            EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng).unwrap();
+        let cred_pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng)
+            .expect("test setup");
         let cred_kp =
             EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, cred_pkcs8.as_ref(), &rng)
-                .unwrap();
+                .expect("test setup");
         let cred_pub = cred_kp.public_key().as_ref();
         let credential_public_key = PublicKey::ES256 {
             x: cred_pub[1..33].to_vec(),
@@ -2053,9 +2059,10 @@ mod tests {
         use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_ASN1_SIGNING};
 
         let rng = SystemRandom::new();
-        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng).unwrap();
+        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng)
+            .expect("test setup");
         let kp = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, pkcs8.as_ref(), &rng)
-            .unwrap();
+            .expect("test setup");
         let pub_bytes = kp.public_key().as_ref(); // 65 bytes: 0x04 || x || y
         let credential_public_key = PublicKey::ES256 {
             x: pub_bytes[1..33].to_vec(),
@@ -2366,9 +2373,10 @@ mod tests {
         use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_ASN1_SIGNING};
 
         let rng = SystemRandom::new();
-        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng).unwrap();
+        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng)
+            .expect("test setup");
         let kp = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, pkcs8.as_ref(), &rng)
-            .unwrap();
+            .expect("test setup");
         let att_pub = kp.public_key().as_ref();
         let cert = make_fake_p256_cert(att_pub);
 
@@ -2378,7 +2386,7 @@ mod tests {
             y: cred_pub[33..65].to_vec(),
         };
         let pub_area = build_tpm_ecc_pub_area(&cred_pub[1..33], &cred_pub[33..65]);
-        let name = compute_pub_area_name(&pub_area).unwrap();
+        let name = compute_pub_area_name(&pub_area).expect("test setup");
 
         // Build certInfo with WRONG magic (0xDEADBEEF).
         let mut attest = Vec::new();
@@ -2423,9 +2431,10 @@ mod tests {
         use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_ASN1_SIGNING};
 
         let rng = SystemRandom::new();
-        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng).unwrap();
+        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng)
+            .expect("test setup");
         let kp = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, pkcs8.as_ref(), &rng)
-            .unwrap();
+            .expect("test setup");
         let att_pub = kp.public_key().as_ref();
         let cert = make_fake_p256_cert(att_pub);
 
@@ -2435,7 +2444,7 @@ mod tests {
             y: cred_pub[33..65].to_vec(),
         };
         let pub_area = build_tpm_ecc_pub_area(&cred_pub[1..33], &cred_pub[33..65]);
-        let name = compute_pub_area_name(&pub_area).unwrap();
+        let name = compute_pub_area_name(&pub_area).expect("test setup");
 
         // Build certInfo with correct magic but wrong type (0x8001 instead of 0x8017).
         let mut attest = Vec::new();
@@ -2480,9 +2489,10 @@ mod tests {
         use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_ASN1_SIGNING};
 
         let rng = SystemRandom::new();
-        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng).unwrap();
+        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng)
+            .expect("test setup");
         let kp = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, pkcs8.as_ref(), &rng)
-            .unwrap();
+            .expect("test setup");
         let att_pub = kp.public_key().as_ref();
         let cert = make_fake_p256_cert(att_pub);
 
@@ -2492,7 +2502,7 @@ mod tests {
             y: cred_pub[33..65].to_vec(),
         };
         let pub_area = build_tpm_ecc_pub_area(&cred_pub[1..33], &cred_pub[33..65]);
-        let name = compute_pub_area_name(&pub_area).unwrap();
+        let name = compute_pub_area_name(&pub_area).expect("test setup");
 
         // Build certInfo with correct magic+type but wrong extraData (all zeros).
         let cert_info = build_tpm_cert_info(&[0u8; 32], &name);
@@ -2528,9 +2538,10 @@ mod tests {
         use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_ASN1_SIGNING};
 
         let rng = SystemRandom::new();
-        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng).unwrap();
+        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng)
+            .expect("test setup");
         let kp = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, pkcs8.as_ref(), &rng)
-            .unwrap();
+            .expect("test setup");
         let att_pub = kp.public_key().as_ref();
         let cert = make_fake_p256_cert(att_pub);
 
@@ -2581,15 +2592,16 @@ mod tests {
         use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_ASN1_SIGNING};
 
         let rng = SystemRandom::new();
-        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng).unwrap();
+        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng)
+            .expect("test setup");
         let kp = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, pkcs8.as_ref(), &rng)
-            .unwrap();
+            .expect("test setup");
         let att_pub = kp.public_key().as_ref();
         let cert = make_fake_p256_cert(att_pub);
 
         // pubArea contains a different key (all zeros) than the credential key.
         let pub_area = build_tpm_ecc_pub_area(&[0u8; 32], &[0u8; 32]);
-        let name = compute_pub_area_name(&pub_area).unwrap();
+        let name = compute_pub_area_name(&pub_area).expect("test setup");
 
         let auth_data = b"auth-data";
         let client_data_hash = [0xCCu8; 32];
@@ -2635,9 +2647,10 @@ mod tests {
         use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_ASN1_SIGNING};
 
         let rng = SystemRandom::new();
-        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng).unwrap();
+        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng)
+            .expect("test setup");
         let kp = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, pkcs8.as_ref(), &rng)
-            .unwrap();
+            .expect("test setup");
         let att_pub = kp.public_key().as_ref();
         let cert = make_fake_p256_cert(att_pub);
 
@@ -2647,7 +2660,7 @@ mod tests {
             y: cred_pub[33..65].to_vec(),
         };
         let pub_area = build_tpm_ecc_pub_area(&cred_pub[1..33], &cred_pub[33..65]);
-        let name = compute_pub_area_name(&pub_area).unwrap();
+        let name = compute_pub_area_name(&pub_area).expect("test setup");
 
         let auth_data = b"auth-data";
         let client_data_hash = [0xCCu8; 32];
@@ -2692,20 +2705,20 @@ mod tests {
         let rng = SystemRandom::new();
 
         // Attestation keypair (signs certInfo).
-        let att_pkcs8 =
-            EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng).unwrap();
+        let att_pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng)
+            .expect("test setup");
         let att_kp =
             EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, att_pkcs8.as_ref(), &rng)
-                .unwrap();
+                .expect("test setup");
         let att_pub = att_kp.public_key().as_ref();
         let cert = make_fake_p256_cert(att_pub);
 
         // Credential keypair (what gets attested — can differ from the AIK cert key).
-        let cred_pkcs8 =
-            EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng).unwrap();
+        let cred_pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng)
+            .expect("test setup");
         let cred_kp =
             EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, cred_pkcs8.as_ref(), &rng)
-                .unwrap();
+                .expect("test setup");
         let cred_pub = cred_kp.public_key().as_ref(); // 65 bytes: 0x04 || x || y
         let cred_x = cred_pub[1..33].to_vec();
         let cred_y = cred_pub[33..65].to_vec();
@@ -2721,7 +2734,7 @@ mod tests {
         let pub_area = build_tpm_ecc_pub_area(&cred_x, &cred_y);
 
         // Compute the TPM name of pubArea: SHA-256 nameAlg → [0x00, 0x0B] || SHA-256(pubArea).
-        let name = compute_pub_area_name(&pub_area).unwrap();
+        let name = compute_pub_area_name(&pub_area).expect("test setup");
 
         // Compute extraData = SHA-256(authData || clientDataHash).
         let mut att_signed = auth_data.to_vec();
@@ -2732,7 +2745,7 @@ mod tests {
         let cert_info = build_tpm_cert_info(&extra_data, &name);
 
         // Sign certInfo with the attestation key (not the credential key).
-        let sig = att_kp.sign(&rng, &cert_info).unwrap();
+        let sig = att_kp.sign(&rng, &cert_info).expect("test setup");
 
         let stmt = Value::Map(vec![
             (
@@ -2820,20 +2833,20 @@ mod tests {
 
     /// Build a self-signed CA certificate using rcgen.
     fn make_ca() -> (rcgen::KeyPair, rcgen::Certificate, Vec<u8>) {
-        let key = rcgen::KeyPair::generate().unwrap();
+        let key = rcgen::KeyPair::generate().expect("test setup");
         let mut params = rcgen::CertificateParams::default();
         params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
-        let cert = params.self_signed(&key).unwrap();
+        let cert = params.self_signed(&key).expect("test setup");
         let der = cert.der().to_vec();
         (key, cert, der)
     }
 
     /// Build a leaf certificate signed by the given CA.
     fn make_leaf(issuer_cert: &rcgen::Certificate, issuer_key: &rcgen::KeyPair) -> Vec<u8> {
-        let leaf_key = rcgen::KeyPair::generate().unwrap();
+        let leaf_key = rcgen::KeyPair::generate().expect("test setup");
         rcgen::CertificateParams::default()
             .signed_by(&leaf_key, issuer_cert, issuer_key)
-            .unwrap()
+            .expect("test setup")
             .der()
             .to_vec()
     }
@@ -2843,10 +2856,12 @@ mod tests {
         issuer_cert: &rcgen::Certificate,
         issuer_key: &rcgen::KeyPair,
     ) -> (rcgen::KeyPair, rcgen::Certificate, Vec<u8>) {
-        let inter_key = rcgen::KeyPair::generate().unwrap();
+        let inter_key = rcgen::KeyPair::generate().expect("test setup");
         let mut p = rcgen::CertificateParams::default();
         p.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
-        let inter_cert = p.signed_by(&inter_key, issuer_cert, issuer_key).unwrap();
+        let inter_cert = p
+            .signed_by(&inter_key, issuer_cert, issuer_key)
+            .expect("test setup");
         let inter_der = inter_cert.der().to_vec();
         (inter_key, inter_cert, inter_der)
     }
@@ -2924,29 +2939,22 @@ mod tests {
         let rng = SystemRandom::new();
 
         // Generate the attestation keypair (signs authData || clientDataHash).
-        let att_pkcs8 =
-            EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng).unwrap();
+        let att_pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng)
+            .expect("test setup");
         let att_kp =
             EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, att_pkcs8.as_ref(), &rng)
-                .unwrap();
+                .expect("test setup");
         let att_pub = att_kp.public_key().as_ref();
-
-        // Generate a real X.509 cert for the attestation key (self-signed → single-cert chain).
-        let rcgen_key = rcgen::KeyPair::generate().unwrap();
-        let mut params = rcgen::CertificateParams::default();
-        params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
-        let rcgen_cert = params.self_signed(&rcgen_key).unwrap();
-        let cert_der = rcgen_cert.der().to_vec();
 
         // Build a fake cert that has the ring EC P-256 key in its SPKI so our
         // extract_ec_p256_public_key_from_cert helper can find it.
         let fake_cert = make_fake_p256_cert(att_pub);
 
-        let cred_pkcs8 =
-            EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng).unwrap();
+        let cred_pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng)
+            .expect("test setup");
         let cred_kp =
             EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, cred_pkcs8.as_ref(), &rng)
-                .unwrap();
+                .expect("test setup");
         let cred_pub = cred_kp.public_key().as_ref();
         let credential_public_key = PublicKey::ES256 {
             x: cred_pub[1..33].to_vec(),
@@ -2959,29 +2967,7 @@ mod tests {
         let mut verification_data = Vec::new();
         verification_data.extend_from_slice(auth_data);
         verification_data.extend_from_slice(&client_data_hash);
-        let sig = att_kp.sign(&rng, &verification_data).unwrap();
-
-        let stmt = Value::Map(vec![
-            (
-                Value::Text("alg".to_string()),
-                Value::Integer((-7i64).into()),
-            ),
-            (
-                Value::Text("sig".to_string()),
-                Value::Bytes(sig.as_ref().to_vec()),
-            ),
-            (
-                Value::Text("x5c".to_string()),
-                // Use the real rcgen cert for chain verification; prepend fake_cert
-                // for key extraction so the SPKI byte-search finds att_pub.
-                // In production both would be the same cert; here we use two
-                // separate vecs to keep test helpers orthogonal.
-                Value::Array(vec![
-                    Value::Bytes(fake_cert.clone()),
-                    Value::Bytes(cert_der.clone()),
-                ]),
-            ),
-        ]);
+        let sig = att_kp.sign(&rng, &verification_data).expect("test setup");
 
         // No trust anchors → chain validated, Basic returned (fake_cert is not
         // parseable by x509-parser so the pair verification will fail; this

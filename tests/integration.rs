@@ -50,21 +50,19 @@ impl Fixture {
     fn make_registration_response(
         &self,
         challenge: &[u8],
-        type_str: &str,
         origin: &str,
         rp_id: &str,
         flags: u8,
         sign_count: u32,
-        fmt: &str,
     ) -> AuthenticatorAttestationResponse {
-        let client_data_json = make_client_data_json_bytes(type_str, challenge, origin);
+        let client_data_json = make_client_data_json_bytes("webauthn.create", challenge, origin);
         let auth_data = make_authenticator_data(
             rp_id,
             flags,
             sign_count,
             Some((&self.cred_id, &self.public_key_bytes)),
         );
-        let att_obj = make_attestation_object(&auth_data, fmt);
+        let att_obj = make_attestation_object(&auth_data, "none");
 
         AuthenticatorAttestationResponse {
             client_data_json,
@@ -119,12 +117,10 @@ fn full_registration_and_authentication_flow() {
     let reg_challenge = Challenge::new().unwrap();
     let response = fixture.make_registration_response(
         &reg_challenge.bytes,
-        "webauthn.create",
         ORIGIN,
         RP_ID,
         0x41, // UP + AT
         1,
-        "none",
     );
     let reg_result = rp
         .verify_registration(&reg_challenge, &response, b"uid")
@@ -161,12 +157,10 @@ fn authentication_with_uv_flag() {
     let reg_challenge = Challenge::new().unwrap();
     let response = fixture.make_registration_response(
         &reg_challenge.bytes,
-        "webauthn.create",
         ORIGIN,
         RP_ID,
         0x45, // UP + UV + AT
         0,
-        "none",
     );
     let credential = rp
         .verify_registration(&reg_challenge, &response, b"uid")
@@ -195,12 +189,10 @@ fn sign_count_both_zero_succeeds() {
     let reg_challenge = Challenge::new().unwrap();
     let response = fixture.make_registration_response(
         &reg_challenge.bytes,
-        "webauthn.create",
         ORIGIN,
         RP_ID,
         0x41,
         0, // counter-less authenticator registered with 0
-        "none",
     );
     let credential = rp
         .verify_registration(&reg_challenge, &response, &[])
@@ -221,15 +213,7 @@ fn sign_count_stored_zero_received_nonzero_succeeds() {
     let fixture = Fixture::new();
 
     let reg_challenge = Challenge::new().unwrap();
-    let response = fixture.make_registration_response(
-        &reg_challenge.bytes,
-        "webauthn.create",
-        ORIGIN,
-        RP_ID,
-        0x41,
-        0,
-        "none",
-    );
+    let response = fixture.make_registration_response(&reg_challenge.bytes, ORIGIN, RP_ID, 0x41, 0);
     let credential = rp
         .verify_registration(&reg_challenge, &response, &[])
         .unwrap()
@@ -306,15 +290,19 @@ fn rejects_wrong_type_in_registration() {
     let rp = RelyingParty::new(RP_ID, ORIGIN, "Test RP");
     let fixture = Fixture::new();
     let challenge = Challenge::new().unwrap();
-    let response = fixture.make_registration_response(
-        &challenge.bytes,
-        "webauthn.get", // wrong type
-        ORIGIN,
+    // Use "webauthn.get" (wrong type for registration) — constructed inline so
+    // the normal helper (which always uses "webauthn.create") stays narrow.
+    let client_data_json = make_client_data_json_bytes("webauthn.get", &challenge.bytes, ORIGIN);
+    let auth_data = make_authenticator_data(
         RP_ID,
         0x41,
         1,
-        "none",
+        Some((&fixture.cred_id, &fixture.public_key_bytes)),
     );
+    let response = AuthenticatorAttestationResponse {
+        client_data_json,
+        attestation_object: make_attestation_object(&auth_data, "none"),
+    };
     let err = rp
         .verify_registration(&challenge, &response, &[])
         .unwrap_err();
@@ -327,15 +315,8 @@ fn rejects_challenge_mismatch_on_registration() {
     let fixture = Fixture::new();
     let challenge = Challenge::new().unwrap();
     let wrong_challenge = Challenge::new().unwrap();
-    let response = fixture.make_registration_response(
-        &wrong_challenge.bytes,
-        "webauthn.create",
-        ORIGIN,
-        RP_ID,
-        0x41,
-        1,
-        "none",
-    );
+    let response =
+        fixture.make_registration_response(&wrong_challenge.bytes, ORIGIN, RP_ID, 0x41, 1);
     let err = rp
         .verify_registration(&challenge, &response, &[])
         .unwrap_err();
@@ -347,15 +328,8 @@ fn rejects_origin_mismatch_on_registration() {
     let rp = RelyingParty::new(RP_ID, ORIGIN, "Test RP");
     let fixture = Fixture::new();
     let challenge = Challenge::new().unwrap();
-    let response = fixture.make_registration_response(
-        &challenge.bytes,
-        "webauthn.create",
-        "https://evil.com",
-        RP_ID,
-        0x41,
-        1,
-        "none",
-    );
+    let response =
+        fixture.make_registration_response(&challenge.bytes, "https://evil.com", RP_ID, 0x41, 1);
     let err = rp
         .verify_registration(&challenge, &response, &[])
         .unwrap_err();
@@ -371,15 +345,8 @@ fn rejects_rp_id_hash_mismatch_on_registration() {
     let rp = RelyingParty::new(RP_ID, ORIGIN, "Test RP");
     let fixture = Fixture::new();
     let challenge = Challenge::new().unwrap();
-    let response = fixture.make_registration_response(
-        &challenge.bytes,
-        "webauthn.create",
-        ORIGIN,
-        "evil.com",
-        0x41,
-        1,
-        "none",
-    );
+    let response =
+        fixture.make_registration_response(&challenge.bytes, ORIGIN, "evil.com", 0x41, 1);
     let err = rp
         .verify_registration(&challenge, &response, &[])
         .unwrap_err();
@@ -393,12 +360,10 @@ fn rejects_missing_user_present_flag_on_registration() {
     let challenge = Challenge::new().unwrap();
     let response = fixture.make_registration_response(
         &challenge.bytes,
-        "webauthn.create",
         ORIGIN,
         RP_ID,
         0x40, // AT set, UP NOT set
         1,
-        "none",
     );
     let err = rp
         .verify_registration(&challenge, &response, &[])
@@ -411,15 +376,19 @@ fn rejects_unsupported_attestation_format() {
     let rp = RelyingParty::new(RP_ID, ORIGIN, "Test RP");
     let fixture = Fixture::new();
     let challenge = Challenge::new().unwrap();
-    let response = fixture.make_registration_response(
-        &challenge.bytes,
-        "webauthn.create",
-        ORIGIN,
+    // Use fmt="packed" with an empty attStmt — constructed inline so the
+    // normal helper (which always uses fmt="none") stays narrow.
+    let client_data_json = make_client_data_json_bytes("webauthn.create", &challenge.bytes, ORIGIN);
+    let auth_data = make_authenticator_data(
         RP_ID,
         0x41,
         1,
-        "packed",
+        Some((&fixture.cred_id, &fixture.public_key_bytes)),
     );
+    let response = AuthenticatorAttestationResponse {
+        client_data_json,
+        attestation_object: make_attestation_object(&auth_data, "packed"),
+    };
     let err = rp
         .verify_registration(&challenge, &response, &[])
         .unwrap_err();
@@ -467,15 +436,8 @@ fn rejects_expired_challenge() {
             .unwrap(),
     };
 
-    let response = fixture.make_registration_response(
-        &expired_challenge.bytes,
-        "webauthn.create",
-        ORIGIN,
-        RP_ID,
-        0x41,
-        1,
-        "none",
-    );
+    let response =
+        fixture.make_registration_response(&expired_challenge.bytes, ORIGIN, RP_ID, 0x41, 1);
     let err = rp
         .verify_registration(&expired_challenge, &response, &[])
         .unwrap_err();
@@ -665,13 +627,8 @@ fn default_rp_accepts_backup_eligible_credential() {
 
     let ch = Challenge::new().unwrap();
     let response = fixture.make_registration_response(
-        &ch.bytes,
-        "webauthn.create",
-        ORIGIN,
-        RP_ID,
-        0x49, // UP + AT + BE
+        &ch.bytes, ORIGIN, RP_ID, 0x49, // UP + AT + BE
         1,
-        "none",
     );
     let result = rp.verify_registration(&ch, &response, b"uid").unwrap();
     assert!(result.backup_eligible);
@@ -685,13 +642,8 @@ fn default_rp_accepts_non_backup_eligible_credential() {
 
     let ch = Challenge::new().unwrap();
     let response = fixture.make_registration_response(
-        &ch.bytes,
-        "webauthn.create",
-        ORIGIN,
-        RP_ID,
-        0x41, // UP + AT (no BE)
+        &ch.bytes, ORIGIN, RP_ID, 0x41, // UP + AT (no BE)
         1,
-        "none",
     );
     let result = rp.verify_registration(&ch, &response, b"uid").unwrap();
     assert!(!result.backup_eligible);
@@ -705,13 +657,8 @@ fn require_backup_eligible_rejects_non_be_at_registration() {
 
     let ch = Challenge::new().unwrap();
     let response = fixture.make_registration_response(
-        &ch.bytes,
-        "webauthn.create",
-        ORIGIN,
-        RP_ID,
-        0x41, // UP + AT — no BE
+        &ch.bytes, ORIGIN, RP_ID, 0x41, // UP + AT — no BE
         1,
-        "none",
     );
     let err = rp.verify_registration(&ch, &response, b"uid").unwrap_err();
     assert!(matches!(err, WebAuthnError::BackupEligibilityRequired));
@@ -724,13 +671,8 @@ fn require_backup_eligible_accepts_be_at_registration() {
 
     let ch = Challenge::new().unwrap();
     let response = fixture.make_registration_response(
-        &ch.bytes,
-        "webauthn.create",
-        ORIGIN,
-        RP_ID,
-        0x49, // UP + AT + BE
+        &ch.bytes, ORIGIN, RP_ID, 0x49, // UP + AT + BE
         1,
-        "none",
     );
     rp.verify_registration(&ch, &response, b"uid").unwrap();
 }
@@ -742,13 +684,8 @@ fn reject_backup_eligible_rejects_be_at_registration() {
 
     let ch = Challenge::new().unwrap();
     let response = fixture.make_registration_response(
-        &ch.bytes,
-        "webauthn.create",
-        ORIGIN,
-        RP_ID,
-        0x49, // UP + AT + BE
+        &ch.bytes, ORIGIN, RP_ID, 0x49, // UP + AT + BE
         1,
-        "none",
     );
     let err = rp.verify_registration(&ch, &response, b"uid").unwrap_err();
     assert!(matches!(err, WebAuthnError::BackupEligibleNotAllowed));
@@ -761,13 +698,8 @@ fn reject_backup_eligible_accepts_non_be_at_registration() {
 
     let ch = Challenge::new().unwrap();
     let response = fixture.make_registration_response(
-        &ch.bytes,
-        "webauthn.create",
-        ORIGIN,
-        RP_ID,
-        0x41, // UP + AT — no BE
+        &ch.bytes, ORIGIN, RP_ID, 0x41, // UP + AT — no BE
         1,
-        "none",
     );
     rp.verify_registration(&ch, &response, b"uid").unwrap();
 }
@@ -779,15 +711,7 @@ fn require_backup_eligible_rejects_non_be_at_authentication() {
     // Register succeeds because we use BE flags.
     let credential = {
         let ch = Challenge::new().unwrap();
-        let r = fixture.make_registration_response(
-            &ch.bytes,
-            "webauthn.create",
-            ORIGIN,
-            RP_ID,
-            0x49,
-            1,
-            "none",
-        );
+        let r = fixture.make_registration_response(&ch.bytes, ORIGIN, RP_ID, 0x49, 1);
         rp.verify_registration(&ch, &r, b"uid").unwrap().credential
     };
 
@@ -806,15 +730,7 @@ fn require_backup_eligible_accepts_be_at_authentication() {
     let fixture = Fixture::new();
     let credential = {
         let ch = Challenge::new().unwrap();
-        let r = fixture.make_registration_response(
-            &ch.bytes,
-            "webauthn.create",
-            ORIGIN,
-            RP_ID,
-            0x49,
-            1,
-            "none",
-        );
+        let r = fixture.make_registration_response(&ch.bytes, ORIGIN, RP_ID, 0x49, 1);
         rp.verify_registration(&ch, &r, b"uid").unwrap().credential
     };
 
@@ -830,15 +746,7 @@ fn reject_backup_eligible_rejects_be_at_authentication() {
     let fixture = Fixture::new();
     let credential = {
         let ch = Challenge::new().unwrap();
-        let r = fixture.make_registration_response(
-            &ch.bytes,
-            "webauthn.create",
-            ORIGIN,
-            RP_ID,
-            0x41,
-            1,
-            "none",
-        );
+        let r = fixture.make_registration_response(&ch.bytes, ORIGIN, RP_ID, 0x41, 1);
         rp.verify_registration(&ch, &r, b"uid").unwrap().credential
     };
 
@@ -856,15 +764,7 @@ fn reject_backup_eligible_accepts_non_be_at_authentication() {
     let fixture = Fixture::new();
     let credential = {
         let ch = Challenge::new().unwrap();
-        let r = fixture.make_registration_response(
-            &ch.bytes,
-            "webauthn.create",
-            ORIGIN,
-            RP_ID,
-            0x41,
-            1,
-            "none",
-        );
+        let r = fixture.make_registration_response(&ch.bytes, ORIGIN, RP_ID, 0x41, 1);
         rp.verify_registration(&ch, &r, b"uid").unwrap().credential
     };
 
@@ -881,13 +781,8 @@ fn authentication_result_exposes_backup_state() {
     let credential = {
         let ch = Challenge::new().unwrap();
         let r = fixture.make_registration_response(
-            &ch.bytes,
-            "webauthn.create",
-            ORIGIN,
-            RP_ID,
-            0x49, // UP + AT + BE
+            &ch.bytes, ORIGIN, RP_ID, 0x49, // UP + AT + BE
             1,
-            "none",
         );
         rp.verify_registration(&ch, &r, b"uid").unwrap().credential
     };
@@ -912,12 +807,10 @@ fn rejects_backup_eligibility_change_at_authentication() {
     let reg_ch = Challenge::new().unwrap();
     let reg_response = fixture.make_registration_response(
         &reg_ch.bytes,
-        "webauthn.create",
         ORIGIN,
         RP_ID,
         0x41, // UP + AT — BE not set → backup_eligible: false stored
         1,
-        "none",
     );
     let credential = rp
         .verify_registration(&reg_ch, &reg_response, b"uid")
@@ -941,15 +834,7 @@ fn rejects_backup_eligibility_change_at_authentication() {
 
 fn register_credential(rp: &RelyingParty, fixture: &Fixture) -> webauthn::Credential {
     let challenge = Challenge::new().unwrap();
-    let response = fixture.make_registration_response(
-        &challenge.bytes,
-        "webauthn.create",
-        ORIGIN,
-        RP_ID,
-        0x41,
-        1,
-        "none",
-    );
+    let response = fixture.make_registration_response(&challenge.bytes, ORIGIN, RP_ID, 0x41, 1);
     rp.verify_registration(&challenge, &response, b"uid")
         .unwrap()
         .credential
@@ -2130,12 +2015,10 @@ fn uv_enforcement_rejects_when_uv_flag_not_set() {
     let reg_challenge = Challenge::new().unwrap();
     let response = fixture.make_registration_response(
         &reg_challenge.bytes,
-        "webauthn.create",
         ORIGIN,
         RP_ID,
         0x41, // UP + AT
         0,
-        "none",
     );
     let credential = rp
         .verify_registration(&reg_challenge, &response, b"uid")
@@ -2165,12 +2048,10 @@ fn uv_enforcement_accepts_when_uv_flag_set() {
     let reg_challenge = Challenge::new().unwrap();
     let response = fixture.make_registration_response(
         &reg_challenge.bytes,
-        "webauthn.create",
         ORIGIN,
         RP_ID,
         0x41, // UP + AT
         0,
-        "none",
     );
     let credential = rp
         .verify_registration(&reg_challenge, &response, b"uid")
@@ -2197,12 +2078,10 @@ fn uv_not_enforced_by_default_when_flag_absent() {
     let reg_challenge = Challenge::new().unwrap();
     let response = fixture.make_registration_response(
         &reg_challenge.bytes,
-        "webauthn.create",
         ORIGIN,
         RP_ID,
         0x41, // UP + AT
         0,
-        "none",
     );
     let credential = rp
         .verify_registration(&reg_challenge, &response, b"uid")
@@ -2227,15 +2106,7 @@ fn allowlist_empty_accepts_es256() {
     let rp = RelyingParty::new(RP_ID, ORIGIN, "Test RP");
     let fixture = Fixture::new();
     let challenge = Challenge::new().unwrap();
-    let response = fixture.make_registration_response(
-        &challenge.bytes,
-        "webauthn.create",
-        ORIGIN,
-        RP_ID,
-        0x41,
-        0,
-        "none",
-    );
+    let response = fixture.make_registration_response(&challenge.bytes, ORIGIN, RP_ID, 0x41, 0);
     rp.verify_registration(&challenge, &response, b"uid")
         .expect("empty allowlist should accept ES256");
 }
@@ -2245,15 +2116,7 @@ fn allowlist_es256_only_accepts_es256() {
     let rp = RelyingParty::new(RP_ID, ORIGIN, "Test RP").allowed_algorithms([webauthn::COSE_ES256]);
     let fixture = Fixture::new();
     let challenge = Challenge::new().unwrap();
-    let response = fixture.make_registration_response(
-        &challenge.bytes,
-        "webauthn.create",
-        ORIGIN,
-        RP_ID,
-        0x41,
-        0,
-        "none",
-    );
+    let response = fixture.make_registration_response(&challenge.bytes, ORIGIN, RP_ID, 0x41, 0);
     rp.verify_registration(&challenge, &response, b"uid")
         .expect("ES256-only allowlist should accept ES256");
 }
@@ -2290,15 +2153,8 @@ fn allowlist_es256_and_rs256_accepts_both() {
 
     let es_fixture = Fixture::new();
     let es_challenge = Challenge::new().unwrap();
-    let es_response = es_fixture.make_registration_response(
-        &es_challenge.bytes,
-        "webauthn.create",
-        ORIGIN,
-        RP_ID,
-        0x41,
-        0,
-        "none",
-    );
+    let es_response =
+        es_fixture.make_registration_response(&es_challenge.bytes, ORIGIN, RP_ID, 0x41, 0);
     rp.verify_registration(&es_challenge, &es_response, b"uid")
         .expect("ES256+RS256 allowlist should accept ES256");
 
@@ -2368,15 +2224,8 @@ fn authentication_with_extension_data_exposes_extensions() {
 
     // Register first (no extensions during registration).
     let reg_challenge = Challenge::new().unwrap();
-    let reg_response = fixture.make_registration_response(
-        &reg_challenge.bytes,
-        "webauthn.create",
-        ORIGIN,
-        RP_ID,
-        0x41,
-        1,
-        "none",
-    );
+    let reg_response =
+        fixture.make_registration_response(&reg_challenge.bytes, ORIGIN, RP_ID, 0x41, 1);
     let credential = rp
         .verify_registration(&reg_challenge, &reg_response, b"uid")
         .unwrap()
@@ -2430,12 +2279,10 @@ fn registration_without_extension_data_has_none_extensions() {
     let challenge = Challenge::new().unwrap();
     let response = fixture.make_registration_response(
         &challenge.bytes,
-        "webauthn.create",
         ORIGIN,
         RP_ID,
         0x41, // UP + AT, no ED
         1,
-        "none",
     );
     let result = rp
         .verify_registration(&challenge, &response, b"uid")
@@ -2453,30 +2300,14 @@ fn single_use_enforcement_disabled_by_default() {
     let fixture = Fixture::new();
 
     let challenge = Challenge::new().unwrap();
-    let response = fixture.make_registration_response(
-        &challenge.bytes,
-        "webauthn.create",
-        ORIGIN,
-        RP_ID,
-        0x41,
-        1,
-        "none",
-    );
+    let response = fixture.make_registration_response(&challenge.bytes, ORIGIN, RP_ID, 0x41, 1);
     rp.verify_registration(&challenge, &response, b"uid")
         .expect("first registration should succeed");
 
     // Same challenge, different fixture (different key/cred_id so it would
     // otherwise be valid) — library must NOT reject it when enforcement is off.
     let fixture2 = Fixture::new();
-    let response2 = fixture2.make_registration_response(
-        &challenge.bytes,
-        "webauthn.create",
-        ORIGIN,
-        RP_ID,
-        0x41,
-        1,
-        "none",
-    );
+    let response2 = fixture2.make_registration_response(&challenge.bytes, ORIGIN, RP_ID, 0x41, 1);
     rp.verify_registration(&challenge, &response2, b"uid2")
         .expect("second registration with same challenge should succeed when enforcement is off");
 }
@@ -2487,28 +2318,12 @@ fn single_use_enforcement_rejects_duplicate_registration_challenge() {
     let fixture = Fixture::new();
 
     let challenge = Challenge::new().unwrap();
-    let response = fixture.make_registration_response(
-        &challenge.bytes,
-        "webauthn.create",
-        ORIGIN,
-        RP_ID,
-        0x41,
-        1,
-        "none",
-    );
+    let response = fixture.make_registration_response(&challenge.bytes, ORIGIN, RP_ID, 0x41, 1);
     rp.verify_registration(&challenge, &response, b"uid")
         .expect("first registration should succeed");
 
     let fixture2 = Fixture::new();
-    let response2 = fixture2.make_registration_response(
-        &challenge.bytes,
-        "webauthn.create",
-        ORIGIN,
-        RP_ID,
-        0x41,
-        1,
-        "none",
-    );
+    let response2 = fixture2.make_registration_response(&challenge.bytes, ORIGIN, RP_ID, 0x41, 1);
     let err = rp
         .verify_registration(&challenge, &response2, b"uid2")
         .unwrap_err();
@@ -2524,15 +2339,7 @@ fn single_use_enforcement_rejects_duplicate_authentication_challenge() {
     let fixture = Fixture::new();
     let credential = {
         let ch = Challenge::new().unwrap();
-        let r = fixture.make_registration_response(
-            &ch.bytes,
-            "webauthn.create",
-            ORIGIN,
-            RP_ID,
-            0x41,
-            1,
-            "none",
-        );
+        let r = fixture.make_registration_response(&ch.bytes, ORIGIN, RP_ID, 0x41, 1);
         rp.verify_registration(&ch, &r, b"uid").unwrap().credential
     };
 
@@ -2561,29 +2368,13 @@ fn single_use_enforcement_allows_distinct_challenges() {
 
     // Two different challenges must both succeed.
     let ch1 = Challenge::new().unwrap();
-    let r1 = fixture.make_registration_response(
-        &ch1.bytes,
-        "webauthn.create",
-        ORIGIN,
-        RP_ID,
-        0x41,
-        1,
-        "none",
-    );
+    let r1 = fixture.make_registration_response(&ch1.bytes, ORIGIN, RP_ID, 0x41, 1);
     rp.verify_registration(&ch1, &r1, b"uid1")
         .expect("first registration with distinct challenge should succeed");
 
     let fixture2 = Fixture::new();
     let ch2 = Challenge::new().unwrap();
-    let r2 = fixture2.make_registration_response(
-        &ch2.bytes,
-        "webauthn.create",
-        ORIGIN,
-        RP_ID,
-        0x41,
-        1,
-        "none",
-    );
+    let r2 = fixture2.make_registration_response(&ch2.bytes, ORIGIN, RP_ID, 0x41, 1);
     rp.verify_registration(&ch2, &r2, b"uid2")
         .expect("second registration with a different challenge should succeed");
 }
@@ -2602,12 +2393,10 @@ fn multi_origin_relying_party_accepts_registered_origin() {
     // Use the second origin in the list.
     let response = fixture.make_registration_response(
         &challenge.bytes,
-        "webauthn.create",
         "http://localhost:8080",
         RP_ID,
         0x41, // UP + AT flags
         1,
-        "none",
     );
     rp.verify_registration(&challenge, &response, b"test-user")
         .unwrap();

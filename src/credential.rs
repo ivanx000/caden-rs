@@ -310,8 +310,8 @@ mod serde_tests {
             bytes: vec![0xDE, 0xAD, 0xBE, 0xEF],
             created_at: epoch_plus(1_700_000_000),
         };
-        let json = serde_json::to_string(&c).unwrap();
-        let back: Challenge = serde_json::from_str(&json).unwrap();
+        let json = serde_json::to_string(&c).expect("test setup");
+        let back: Challenge = serde_json::from_str(&json).expect("test setup");
         assert_eq!(back.bytes, c.bytes);
         assert_eq!(back.created_at, c.created_at);
     }
@@ -322,8 +322,8 @@ mod serde_tests {
             x: vec![0x01u8; 32],
             y: vec![0x02u8; 32],
         };
-        let json = serde_json::to_string(&key).unwrap();
-        let back: PublicKey = serde_json::from_str(&json).unwrap();
+        let json = serde_json::to_string(&key).expect("test setup");
+        let back: PublicKey = serde_json::from_str(&json).expect("test setup");
         match back {
             PublicKey::ES256 { x, y } => {
                 assert_eq!(x, vec![0x01u8; 32]);
@@ -336,8 +336,8 @@ mod serde_tests {
     #[test]
     fn public_key_eddsa_round_trips() {
         let key = PublicKey::EdDSA(vec![0x03u8; 32]);
-        let json = serde_json::to_string(&key).unwrap();
-        let back: PublicKey = serde_json::from_str(&json).unwrap();
+        let json = serde_json::to_string(&key).expect("test setup");
+        let back: PublicKey = serde_json::from_str(&json).expect("test setup");
         match back {
             PublicKey::EdDSA(bytes) => assert_eq!(bytes, vec![0x03u8; 32]),
             _ => panic!("wrong variant"),
@@ -350,8 +350,8 @@ mod serde_tests {
             n: vec![0x04u8; 256],
             e: vec![0x01, 0x00, 0x01],
         };
-        let json = serde_json::to_string(&key).unwrap();
-        let back: PublicKey = serde_json::from_str(&json).unwrap();
+        let json = serde_json::to_string(&key).expect("test setup");
+        let back: PublicKey = serde_json::from_str(&json).expect("test setup");
         match back {
             PublicKey::RS256 { n, e } => {
                 assert_eq!(n, vec![0x04u8; 256]);
@@ -375,8 +375,8 @@ mod serde_tests {
             created_at: epoch_plus(1_700_000_000),
             backup_eligible: true,
         };
-        let json = serde_json::to_string(&cred).unwrap();
-        let back: Credential = serde_json::from_str(&json).unwrap();
+        let json = serde_json::to_string(&cred).expect("test setup");
+        let back: Credential = serde_json::from_str(&json).expect("test setup");
         assert_eq!(back.id, cred.id);
         assert_eq!(back.sign_count, cred.sign_count);
         assert_eq!(back.user_id, cred.user_id);

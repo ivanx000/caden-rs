@@ -639,7 +639,7 @@ mod tests {
             Value::Text("authData".to_string()),
             Value::Bytes(vec![0u8; 37]),
         )]);
-        ciborium::into_writer(&v, &mut buf).unwrap();
+        ciborium::into_writer(&v, &mut buf).expect("test setup");
         let result = parse_attestation_object(&buf);
         assert!(matches!(
             result,
@@ -657,7 +657,7 @@ mod tests {
             ),
             (Value::Text("attStmt".to_string()), Value::Map(vec![])),
         ]);
-        ciborium::into_writer(&v, &mut buf).unwrap();
+        ciborium::into_writer(&v, &mut buf).expect("test setup");
         let result = parse_attestation_object(&buf);
         assert!(matches!(
             result,
@@ -678,7 +678,7 @@ mod tests {
                 Value::Bytes(vec![0u8; 37]),
             ),
         ]);
-        ciborium::into_writer(&v, &mut buf).unwrap();
+        ciborium::into_writer(&v, &mut buf).expect("test setup");
         let result = parse_attestation_object(&buf);
         assert!(matches!(
             result,
@@ -701,7 +701,7 @@ mod tests {
                 Value::Text("not bytes".to_string()),
             ),
         ]);
-        ciborium::into_writer(&v, &mut buf).unwrap();
+        ciborium::into_writer(&v, &mut buf).expect("test setup");
         let result = parse_attestation_object(&buf);
         assert!(matches!(
             result,

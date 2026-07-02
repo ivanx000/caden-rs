@@ -239,13 +239,13 @@ mod tests {
 
     #[test]
     fn rsa_components_to_der_rejects_empty_n() {
-        let err = rsa_components_to_der(&[], &[0x01, 0x00, 0x01]).unwrap_err();
+        let err = rsa_components_to_der(&[], &[0x01, 0x00, 0x01]).expect_err("expected error");
         assert!(matches!(err, WebAuthnError::InvalidPublicKey(ref m) if m.contains("n")));
     }
 
     #[test]
     fn rsa_components_to_der_rejects_empty_e() {
-        let err = rsa_components_to_der(&[0x01u8; 256], &[]).unwrap_err();
+        let err = rsa_components_to_der(&[0x01u8; 256], &[]).expect_err("expected error");
         assert!(matches!(err, WebAuthnError::InvalidPublicKey(ref m) if m.contains("e")));
     }
 
@@ -257,7 +257,7 @@ mod tests {
         // SEQUENCE = 1(tag)+3(len)+265(contents) = 269 bytes
         let n = vec![0x01u8; 256];
         let e = [0x01u8, 0x00, 0x01];
-        let der = rsa_components_to_der(&n, &e).unwrap();
+        let der = rsa_components_to_der(&n, &e).expect("test setup");
         assert_eq!(der[0], 0x30, "must start with SEQUENCE tag");
         assert_eq!(
             der.len(),
@@ -274,7 +274,7 @@ mod tests {
         // SEQUENCE = 1(tag)+3(len)+266(contents) = 270 bytes
         let n = vec![0xb7u8; 256];
         let e = [0x01u8, 0x00, 0x01];
-        let der = rsa_components_to_der(&n, &e).unwrap();
+        let der = rsa_components_to_der(&n, &e).expect("test setup");
         assert_eq!(der[0], 0x30);
         assert_eq!(
             der.len(),
@@ -310,7 +310,7 @@ mod tests {
         ];
         let e: &[u8] = &[0x01, 0x00, 0x01];
 
-        let der = rsa_components_to_der(n, e).unwrap();
+        let der = rsa_components_to_der(n, e).expect("test setup");
         assert_eq!(der[0], 0x30);
         assert_eq!(
             der.len(),

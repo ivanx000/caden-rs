@@ -104,14 +104,14 @@ mod tests {
 
     #[test]
     fn two_challenges_differ() {
-        let c1 = Challenge::new().unwrap();
-        let c2 = Challenge::new().unwrap();
+        let c1 = Challenge::new().expect("test setup");
+        let c2 = Challenge::new().expect("test setup");
         assert_ne!(c1.bytes, c2.bytes);
     }
 
     #[test]
     fn challenge_is_32_bytes() {
-        let c = Challenge::new().unwrap();
+        let c = Challenge::new().expect("test setup");
         assert_eq!(c.bytes.len(), 32);
     }
 }

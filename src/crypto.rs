@@ -166,20 +166,20 @@ mod tests {
 
     #[test]
     fn random_bytes_zero_len_returns_empty() {
-        let result = random_bytes(0).unwrap();
+        let result = random_bytes(0).expect("test setup");
         assert!(result.is_empty());
     }
 
     #[test]
     fn random_bytes_returns_exact_len() {
-        let result = random_bytes(32).unwrap();
+        let result = random_bytes(32).expect("test setup");
         assert_eq!(result.len(), 32);
     }
 
     #[test]
     fn random_bytes_two_calls_differ() {
-        let a = random_bytes(32).unwrap();
-        let b = random_bytes(32).unwrap();
+        let a = random_bytes(32).expect("test setup");
+        let b = random_bytes(32).expect("test setup");
         assert_ne!(a, b, "two random 32-byte draws should not match");
     }
 
@@ -189,20 +189,20 @@ mod tests {
     fn verify_es256_rejects_key_missing_prefix() {
         // A 64-byte key (missing the 0x04 uncompressed-point prefix) is invalid.
         let key_64 = vec![0x01u8; 64];
-        let err = verify_es256(&key_64, b"msg", b"sig").unwrap_err();
+        let err = verify_es256(&key_64, b"msg", b"sig").expect_err("expected error");
         assert!(matches!(err, WebAuthnError::SignatureVerificationFailed));
     }
 
     #[test]
     fn verify_es256_rejects_empty_key() {
-        let err = verify_es256(&[], b"msg", b"sig").unwrap_err();
+        let err = verify_es256(&[], b"msg", b"sig").expect_err("expected error");
         assert!(matches!(err, WebAuthnError::SignatureVerificationFailed));
     }
 
     #[test]
     fn verify_es256_rejects_empty_signature() {
         let key = vec![0x04u8; 65];
-        let err = verify_es256(&key, b"hello", &[]).unwrap_err();
+        let err = verify_es256(&key, b"hello", &[]).expect_err("expected error");
         assert!(matches!(err, WebAuthnError::SignatureVerificationFailed));
     }
 
@@ -212,14 +212,15 @@ mod tests {
         use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_ASN1_SIGNING};
 
         let rng = SystemRandom::new();
-        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng).unwrap();
+        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng)
+            .expect("test setup");
         let kp = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, pkcs8.as_ref(), &rng)
-            .unwrap();
+            .expect("test setup");
         let pk = kp.public_key().as_ref();
 
         // Sign "message A" but verify against "message B".
-        let sig = kp.sign(&rng, b"message A").unwrap();
-        let err = verify_es256(pk, b"message B", sig.as_ref()).unwrap_err();
+        let sig = kp.sign(&rng, b"message A").expect("test setup");
+        let err = verify_es256(pk, b"message B", sig.as_ref()).expect_err("expected error");
         assert!(matches!(err, WebAuthnError::SignatureVerificationFailed));
     }
 
@@ -229,12 +230,14 @@ mod tests {
         use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_ASN1_SIGNING};
 
         let rng = SystemRandom::new();
-        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng).unwrap();
+        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng)
+            .expect("test setup");
         let kp = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, pkcs8.as_ref(), &rng)
-            .unwrap();
+            .expect("test setup");
         let pk = kp.public_key().as_ref();
 
-        let err = verify_es256(pk, b"hello", &[0xDE, 0xAD, 0xBE, 0xEF]).unwrap_err();
+        let err =
+            verify_es256(pk, b"hello", &[0xDE, 0xAD, 0xBE, 0xEF]).expect_err("expected error");
         assert!(matches!(err, WebAuthnError::SignatureVerificationFailed));
     }
 
@@ -245,8 +248,8 @@ mod tests {
         use ring::signature::{Ed25519KeyPair, KeyPair};
 
         let rng = SystemRandom::new();
-        let pkcs8 = Ed25519KeyPair::generate_pkcs8(&rng).unwrap();
-        let kp = Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap();
+        let pkcs8 = Ed25519KeyPair::generate_pkcs8(&rng).expect("test setup");
+        let kp = Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).expect("test setup");
         let pk = kp.public_key().as_ref();
 
         let msg = b"test message for EdDSA verification";
@@ -259,18 +262,18 @@ mod tests {
         use ring::signature::{Ed25519KeyPair, KeyPair};
 
         let rng = SystemRandom::new();
-        let pkcs8 = Ed25519KeyPair::generate_pkcs8(&rng).unwrap();
-        let kp = Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap();
+        let pkcs8 = Ed25519KeyPair::generate_pkcs8(&rng).expect("test setup");
+        let kp = Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).expect("test setup");
         let pk = kp.public_key().as_ref();
 
         let sig = kp.sign(b"message A");
-        let err = verify_eddsa(pk, b"message B", sig.as_ref()).unwrap_err();
+        let err = verify_eddsa(pk, b"message B", sig.as_ref()).expect_err("expected error");
         assert!(matches!(err, WebAuthnError::SignatureVerificationFailed));
     }
 
     #[test]
     fn verify_eddsa_rejects_empty_key() {
-        let err = verify_eddsa(&[], b"msg", &[0u8; 64]).unwrap_err();
+        let err = verify_eddsa(&[], b"msg", &[0u8; 64]).expect_err("expected error");
         assert!(matches!(err, WebAuthnError::SignatureVerificationFailed));
     }
 
@@ -279,15 +282,15 @@ mod tests {
         use ring::signature::{Ed25519KeyPair, KeyPair};
 
         let rng = SystemRandom::new();
-        let pkcs8 = Ed25519KeyPair::generate_pkcs8(&rng).unwrap();
-        let kp = Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap();
+        let pkcs8 = Ed25519KeyPair::generate_pkcs8(&rng).expect("test setup");
+        let kp = Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).expect("test setup");
         let pk = kp.public_key().as_ref();
 
         let msg = b"test message";
         let sig = kp.sign(msg);
         let mut sig_bytes = sig.as_ref().to_vec();
         sig_bytes[10] ^= 0xFF;
-        let err = verify_eddsa(pk, msg, &sig_bytes).unwrap_err();
+        let err = verify_eddsa(pk, msg, &sig_bytes).expect_err("expected error");
         assert!(matches!(err, WebAuthnError::SignatureVerificationFailed));
     }
 
@@ -409,16 +412,16 @@ mod tests {
         use ring::signature::RSA_PKCS1_SHA256;
 
         let rng = SystemRandom::new();
-        let key_pair = RsaKeyPair::from_pkcs8(TEST_RSA_PKCS8_DER).unwrap();
+        let key_pair = RsaKeyPair::from_pkcs8(TEST_RSA_PKCS8_DER).expect("test setup");
         let mut sig = vec![0u8; key_pair.public().modulus_len()];
         key_pair
             .sign(&RSA_PKCS1_SHA256, &rng, message, &mut sig)
-            .unwrap();
+            .expect("test setup");
         sig
     }
 
     fn rsa_public_key_der() -> Vec<u8> {
-        crate::der::rsa_components_to_der(TEST_RSA_N, TEST_RSA_E).unwrap()
+        crate::der::rsa_components_to_der(TEST_RSA_N, TEST_RSA_E).expect("test setup")
     }
 
     #[test]
@@ -435,7 +438,7 @@ mod tests {
         let mut sig = rsa_sign(message);
         sig[10] ^= 0xFF;
         let der = rsa_public_key_der();
-        let err = verify_rs256(&der, message, &sig).unwrap_err();
+        let err = verify_rs256(&der, message, &sig).expect_err("expected error");
         assert!(matches!(err, WebAuthnError::SignatureVerificationFailed));
     }
 
@@ -443,20 +446,21 @@ mod tests {
     fn verify_rs256_rejects_wrong_message() {
         let sig = rsa_sign(b"message A");
         let der = rsa_public_key_der();
-        let err = verify_rs256(&der, b"message B", &sig).unwrap_err();
+        let err = verify_rs256(&der, b"message B", &sig).expect_err("expected error");
         assert!(matches!(err, WebAuthnError::SignatureVerificationFailed));
     }
 
     #[test]
     fn verify_rs256_rejects_empty_public_key() {
-        let err = verify_rs256(&[], b"msg", &[0u8; 256]).unwrap_err();
+        let err = verify_rs256(&[], b"msg", &[0u8; 256]).expect_err("expected error");
         assert!(matches!(err, WebAuthnError::SignatureVerificationFailed));
     }
 
     #[test]
     fn verify_rs256_rejects_garbage_signature() {
         let der = rsa_public_key_der();
-        let err = verify_rs256(&der, b"hello", &[0xDE, 0xAD, 0xBE, 0xEF]).unwrap_err();
+        let err =
+            verify_rs256(&der, b"hello", &[0xDE, 0xAD, 0xBE, 0xEF]).expect_err("expected error");
         assert!(matches!(err, WebAuthnError::SignatureVerificationFailed));
     }
 
@@ -465,7 +469,7 @@ mod tests {
     fn hex_to_bytes(s: &str) -> Vec<u8> {
         (0..s.len())
             .step_by(2)
-            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).expect("test setup"))
             .collect()
     }
 }
