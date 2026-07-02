@@ -8,7 +8,7 @@ keywords = ["webauthn", "passkey", "fido", "authentication", "security"]
 categories = ["authentication", "cryptography", "web-programming"]
 license = "MIT OR Apache-2.0"
 readme = "README.md"
-repository = "https://github.com/ivanxie/caden-rs"
+repository = "https://github.com/ivanx000/caden-rs"
 documentation = "https://docs.rs/caden"
 
 [lib]
