@@ -37,9 +37,76 @@ pub struct AuthenticatorAssertionResponse {
 
     /// Optional raw user handle bytes (some authenticators omit it).
     pub user_handle: Option<Vec<u8>>,
+
+    /// The credential ID returned by the authenticator as `rawId` in the
+    /// `PublicKeyCredential` object.
+    ///
+    /// In the discoverable credential (passkey) flow, `allowCredentials` is
+    /// empty and the authenticator picks a credential; call
+    /// [`crate::RelyingParty::begin_authentication`] to extract this value
+    /// and look up the [`crate::Credential`] before calling
+    /// [`crate::RelyingParty::verify_authentication`].
+    ///
+    /// In the non-discoverable flow, this equals the ID the server placed in
+    /// `allowCredentials`. In both cases, set this to the raw bytes of
+    /// `PublicKeyCredential.rawId` returned by the browser.
+    pub credential_id: Vec<u8>,
 }
 
 impl RelyingParty {
+    /// Extract the credential ID and user handle from a passkey assertion response.
+    ///
+    /// In the discoverable credential (passkey) flow, the browser sends
+    /// `allowCredentials: []` — the authenticator picks a credential and returns
+    /// its ID as `rawId` in the `PublicKeyCredential`. Call this method to
+    /// extract the ID, look up the stored [`crate::Credential`] in your
+    /// database, then pass it to [`RelyingParty::verify_authentication`].
+    ///
+    /// The library holds no credential state; the lookup step is the caller's
+    /// responsibility, keeping the library storage-agnostic.
+    ///
+    /// # Arguments
+    /// * `response` — The assertion response from the authenticator.
+    ///
+    /// # Returns
+    /// `(credential_id, user_handle)` — use `credential_id` to look up the
+    /// [`crate::Credential`] in your store. `user_handle` identifies the user
+    /// account when the authenticator includes it; not all authenticators do.
+    ///
+    /// # Errors
+    /// Returns [`crate::error::WebAuthnError::MissingCredentialId`] if
+    /// `response.credential_id` is empty.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// # use webauthn::{AuthenticatorAssertionResponse, Challenge, RelyingParty};
+    /// # let rp = RelyingParty::new("example.com", "https://example.com", "Demo");
+    /// # let response = AuthenticatorAssertionResponse {
+    /// #     client_data_json: vec![], authenticator_data: vec![],
+    /// #     signature: vec![], user_handle: None, credential_id: vec![1, 2, 3],
+    /// # };
+    /// # let challenge = Challenge::new().unwrap();
+    /// // 1. Extract the credential ID from the assertion.
+    /// let (cred_id, _user_handle) = rp.begin_authentication(&response).unwrap();
+    ///
+    /// // 2. Look up the credential in your database.
+    /// # let stored_credential = rp.begin_authentication(&response).map(|_| todo!()).unwrap();
+    /// // let stored_credential = db.find_credential(&cred_id).unwrap();
+    ///
+    /// // 3. Verify the full assertion.
+    /// // let result = rp.verify_authentication(&stored_credential, &challenge, &response).unwrap();
+    /// ```
+    pub fn begin_authentication(
+        &self,
+        response: &AuthenticatorAssertionResponse,
+    ) -> Result<(Vec<u8>, Option<Vec<u8>>)> {
+        if response.credential_id.is_empty() {
+            return Err(WebAuthnError::MissingCredentialId);
+        }
+        Ok((response.credential_id.clone(), response.user_handle.clone()))
+    }
+
     /// Verify an authentication ceremony response (W3C WebAuthn §7.2).
     ///
     /// Call this after the client returns an `AuthenticatorAssertionResponse`.

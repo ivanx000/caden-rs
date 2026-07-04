@@ -121,6 +121,31 @@ struct AuthCompleteResponse {
     new_sign_count: u32,
 }
 
+/// POST /passkey/authenticate/begin — issue a challenge with no allowCredentials hint.
+///
+/// In the discoverable credential (passkey) flow, the server does not know
+/// which credential the user will choose. The authenticator picks one and
+/// returns the credential ID in `rawId` alongside the assertion.
+#[derive(Serialize)]
+struct PasskeyAuthBeginResponse {
+    session_id: String,
+    challenge: String,
+}
+
+/// POST /passkey/authenticate/complete — verify a discoverable credential assertion.
+///
+/// `credential_id` is the base64url-encoded `rawId` from the browser's
+/// `PublicKeyCredential` response. The server uses it to look up the stored
+/// credential before calling `verify_authentication`.
+#[derive(Deserialize)]
+struct PasskeyAuthCompleteRequest {
+    session_id: String,
+    credential_id: String,
+    client_data_json: String,
+    authenticator_data: String,
+    signature: String,
+}
+
 #[derive(Serialize)]
 struct ErrorResponse {
     error: String,
@@ -394,8 +419,140 @@ async fn authenticate_complete(
         authenticator_data,
         signature,
         user_handle: None,
+        credential_id: cred_id_bytes.clone(),
     };
 
+    let result =
+        match state
+            .relying_party
+            .verify_authentication(&stored_credential, &challenge, &assertion)
+        {
+            Ok(r) => r,
+            Err(e) => {
+                return client_error(format!("authentication failed: {e}"), "VERIFICATION_FAILED")
+                    .into_response()
+            }
+        };
+
+    // Update the stored sign count.
+    {
+        let mut creds = state.credentials.lock().await;
+        if let Some(cred) = creds.get_mut(&cred_id_hex) {
+            cred.sign_count = result.new_sign_count;
+        }
+    }
+
+    (
+        StatusCode::OK,
+        Json(AuthCompleteResponse {
+            status: "ok",
+            new_sign_count: result.new_sign_count,
+        }),
+    )
+        .into_response()
+}
+
+/// POST /passkey/authenticate/begin — issue a challenge with no allowCredentials hint.
+///
+/// The authenticator will present the user with credentials matching the RP ID
+/// and return the chosen credential's ID as `rawId` in the assertion.
+async fn passkey_authenticate_begin(State(state): State<SharedState>) -> impl IntoResponse {
+    let challenge = match Challenge::new() {
+        Ok(c) => c,
+        Err(e) => return server_error(format!("challenge generation failed: {e}")).into_response(),
+    };
+
+    let session_id = new_session_id();
+    let challenge_b64 = URL_SAFE_NO_PAD.encode(&challenge.bytes);
+
+    state
+        .pending_challenges
+        .lock()
+        .await
+        .insert(session_id.clone(), challenge);
+
+    (
+        StatusCode::OK,
+        Json(PasskeyAuthBeginResponse {
+            session_id,
+            challenge: challenge_b64,
+        }),
+    )
+        .into_response()
+}
+
+/// POST /passkey/authenticate/complete — verify a discoverable credential assertion.
+///
+/// Demonstrates the passkey flow:
+/// 1. Read `credential_id` (`rawId`) from the request — the authenticator chose this.
+/// 2. Call [`RelyingParty::begin_authentication`] to validate and extract the ID.
+/// 3. Look up the stored [`Credential`] by that ID.
+/// 4. Call [`RelyingParty::verify_authentication`] to verify the full assertion.
+async fn passkey_authenticate_complete(
+    State(state): State<SharedState>,
+    Json(req): Json<PasskeyAuthCompleteRequest>,
+) -> impl IntoResponse {
+    let challenge = {
+        let mut map = state.pending_challenges.lock().await;
+        match map.remove(&req.session_id) {
+            Some(c) => c,
+            None => {
+                return client_error("session not found or expired", "SESSION_NOT_FOUND")
+                    .into_response()
+            }
+        }
+    };
+
+    let client_data_json = match decode_b64url(&req.client_data_json, "client_data_json") {
+        Ok(b) => b,
+        Err(e) => return e.into_response(),
+    };
+    let authenticator_data = match decode_b64url(&req.authenticator_data, "authenticator_data") {
+        Ok(b) => b,
+        Err(e) => return e.into_response(),
+    };
+    let signature = match decode_b64url(&req.signature, "signature") {
+        Ok(b) => b,
+        Err(e) => return e.into_response(),
+    };
+    let cred_id_bytes = match decode_b64url(&req.credential_id, "credential_id") {
+        Ok(b) => b,
+        Err(e) => return e.into_response(),
+    };
+
+    let assertion = AuthenticatorAssertionResponse {
+        client_data_json,
+        authenticator_data,
+        signature,
+        user_handle: None,
+        credential_id: cred_id_bytes,
+    };
+
+    // Step 1: extract the credential ID from the assertion response.
+    let (lookup_id, _user_handle) = match state.relying_party.begin_authentication(&assertion) {
+        Ok(pair) => pair,
+        Err(e) => {
+            return client_error(
+                format!("begin_authentication failed: {e}"),
+                "MISSING_CREDENTIAL_ID",
+            )
+            .into_response()
+        }
+    };
+
+    // Step 2: look up the credential by ID.
+    let cred_id_hex = to_hex(&lookup_id);
+    let stored_credential = {
+        let creds = state.credentials.lock().await;
+        match creds.get(&cred_id_hex).cloned() {
+            Some(c) => c,
+            None => {
+                return client_error("credential not found", "CREDENTIAL_NOT_FOUND").into_response()
+            }
+        }
+    };
+
+    // Step 3: verify the full assertion.
     let result =
         match state
             .relying_party
@@ -442,6 +599,14 @@ async fn main() {
         .route("/register/complete", post(register_complete))
         .route("/authenticate/begin", post(authenticate_begin))
         .route("/authenticate/complete", post(authenticate_complete))
+        .route(
+            "/passkey/authenticate/begin",
+            post(passkey_authenticate_begin),
+        )
+        .route(
+            "/passkey/authenticate/complete",
+            post(passkey_authenticate_complete),
+        )
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000")
@@ -456,6 +621,10 @@ async fn main() {
     println!("  POST /register/complete");
     println!("  POST /authenticate/begin");
     println!("  POST /authenticate/complete");
+    println!("  POST /passkey/authenticate/begin    (discoverable credential / passkey flow)");
+    println!(
+        "  POST /passkey/authenticate/complete (uses begin_authentication for credential lookup)"
+    );
 
     axum::serve(listener, app).await.expect("server failed");
 }

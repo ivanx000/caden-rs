@@ -149,6 +149,15 @@ pub enum WebAuthnError {
     /// the root is accepted unconditionally.
     #[error("Attestation root certificate is not trusted by any configured trust anchor")]
     AttestationRootUntrusted,
+
+    /// The `credential_id` field of an [`crate::AuthenticatorAssertionResponse`] is empty.
+    ///
+    /// Both discoverable and non-discoverable flows require the authenticator to
+    /// return the selected credential ID as `rawId` in the `PublicKeyCredential`.
+    /// An empty `credential_id` means the field was not populated before calling
+    /// [`crate::RelyingParty::begin_authentication`].
+    #[error("Missing credential ID: response.credential_id must not be empty")]
+    MissingCredentialId,
 }
 
 /// Convenience alias so callers write `webauthn::Result<T>`.

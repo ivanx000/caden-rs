@@ -191,6 +191,7 @@ fn main() -> Result<()> {
         RP_ID,
         ORIGIN,
         1, // sign count incremented from 0 to 1
+        &cred_id,
     )?;
 
     let auth_result = rp
@@ -217,6 +218,7 @@ fn main() -> Result<()> {
         RP_ID,
         ORIGIN,
         1, // same sign count — replay
+        &cred_id,
     )?;
 
     match rp.verify_authentication(&stored_es256, &replay_challenge, &replay_response) {
@@ -281,6 +283,7 @@ fn main() -> Result<()> {
         RP_ID,
         ORIGIN,
         1,
+        &rsa_cred_id,
     )?;
 
     let rsa_auth_result = rp
@@ -307,6 +310,7 @@ fn main() -> Result<()> {
         RP_ID,
         ORIGIN,
         1, // same sign count — replay
+        &rsa_cred_id,
     )?;
 
     match rp.verify_authentication(&stored_rs256, &rsa_replay_challenge, &rsa_replay_response) {
@@ -375,6 +379,7 @@ fn main() -> Result<()> {
         RP_ID,
         ORIGIN,
         1,
+        &p384_cred_id,
     )?;
 
     let p384_auth_result = rp
@@ -401,6 +406,7 @@ fn main() -> Result<()> {
         RP_ID,
         ORIGIN,
         1, // same sign count — replay
+        &p384_cred_id,
     )?;
 
     match rp.verify_authentication(&stored_es384, &p384_replay_challenge, &p384_replay_response) {
@@ -461,8 +467,14 @@ fn main() -> Result<()> {
     println!("\n[EdDSA Authentication]");
 
     let ed_auth_challenge = Challenge::new().context("failed to generate challenge")?;
-    let ed_auth_response =
-        make_eddsa_auth_response(&ed_key_pair, &ed_auth_challenge.bytes, RP_ID, ORIGIN, 1)?;
+    let ed_auth_response = make_eddsa_auth_response(
+        &ed_key_pair,
+        &ed_auth_challenge.bytes,
+        RP_ID,
+        ORIGIN,
+        1,
+        &ed_cred_id,
+    )?;
 
     let ed_auth_result = rp
         .verify_authentication(&stored_eddsa, &ed_auth_challenge, &ed_auth_response)
@@ -487,6 +499,7 @@ fn main() -> Result<()> {
         RP_ID,
         ORIGIN,
         1, // same sign count — replay
+        &ed_cred_id,
     )?;
 
     match rp.verify_authentication(&stored_eddsa, &ed_replay_challenge, &ed_replay_response) {
@@ -497,6 +510,57 @@ fn main() -> Result<()> {
         Ok(_) => panic!("BUG: EdDSA replay attack should have been rejected!"),
         Err(e) => return Err(e.into()),
     }
+
+    // ── Passkey flow: discoverable credential (begin_authentication) ──────────
+    println!("\n[Passkey / Discoverable Credential Flow]");
+
+    // The server issues a challenge with no allowCredentials hint.
+    // The authenticator picks a credential and returns its ID as rawId.
+    let passkey_challenge = Challenge::new().context("failed to generate passkey challenge")?;
+
+    // Simulated authenticator assertion — credential_id is the rawId the
+    // authenticator sends back alongside the assertion.
+    let passkey_assertion = make_es256_auth_response(
+        &key_pair,
+        &rng,
+        &passkey_challenge.bytes,
+        RP_ID,
+        ORIGIN,
+        2, // stored_es256 is at sign_count=1 after the previous auth
+        &cred_id,
+    )?;
+
+    // Step 1: Extract the credential ID from the response — no allowCredentials
+    // was sent, so the server must read rawId to know which credential to load.
+    let (returned_cred_id, _user_handle) = rp
+        .begin_authentication(&passkey_assertion)
+        .context("begin_authentication failed")?;
+
+    // Step 2: Look up the credential (trivially simulated here).
+    let looked_up = if returned_cred_id == stored_es256.id {
+        &stored_es256
+    } else {
+        anyhow::bail!("BUG: returned credential ID does not match stored ES256 credential");
+    };
+
+    // Step 3: Verify the full assertion.
+    let passkey_result = rp
+        .verify_authentication(looked_up, &passkey_challenge, &passkey_assertion)
+        .context("passkey verify_authentication failed")?;
+
+    println!("  Passkey authentication successful");
+    println!(
+        "  Credential ID (hex): {}",
+        looked_up
+            .id
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    );
+    println!(
+        "  Sign count: {} → {}",
+        looked_up.sign_count, passkey_result.new_sign_count
+    );
 
     println!("\n─────────────────────────────────────");
     println!("All checks passed.");
@@ -676,6 +740,7 @@ fn make_es256_auth_response(
     rp_id: &str,
     origin: &str,
     sign_count: u32,
+    cred_id: &[u8],
 ) -> Result<AuthenticatorAssertionResponse> {
     let client_data_bytes = make_client_data_json_bytes("webauthn.get", challenge, origin);
     let auth_data_bytes = make_authenticator_data(rp_id, 0x01, sign_count, None);
@@ -693,6 +758,7 @@ fn make_es256_auth_response(
         authenticator_data: auth_data_bytes,
         signature: sig.as_ref().to_vec(),
         user_handle: None,
+        credential_id: cred_id.to_vec(),
     })
 }
 
@@ -703,6 +769,7 @@ fn make_es384_auth_response(
     rp_id: &str,
     origin: &str,
     sign_count: u32,
+    cred_id: &[u8],
 ) -> Result<AuthenticatorAssertionResponse> {
     let client_data_bytes = make_client_data_json_bytes("webauthn.get", challenge, origin);
     let auth_data_bytes = make_authenticator_data(rp_id, 0x01, sign_count, None);
@@ -720,6 +787,7 @@ fn make_es384_auth_response(
         authenticator_data: auth_data_bytes,
         signature: sig.as_ref().to_vec(),
         user_handle: None,
+        credential_id: cred_id.to_vec(),
     })
 }
 
@@ -730,6 +798,7 @@ fn make_rs256_auth_response(
     rp_id: &str,
     origin: &str,
     sign_count: u32,
+    cred_id: &[u8],
 ) -> Result<AuthenticatorAssertionResponse> {
     use ring::signature::RSA_PKCS1_SHA256;
 
@@ -750,6 +819,7 @@ fn make_rs256_auth_response(
         authenticator_data: auth_data_bytes,
         signature: sig,
         user_handle: None,
+        credential_id: cred_id.to_vec(),
     })
 }
 
@@ -775,6 +845,7 @@ fn make_eddsa_auth_response(
     rp_id: &str,
     origin: &str,
     sign_count: u32,
+    cred_id: &[u8],
 ) -> Result<AuthenticatorAssertionResponse> {
     let client_data_bytes = make_client_data_json_bytes("webauthn.get", challenge, origin);
     let auth_data_bytes = make_authenticator_data(rp_id, 0x01, sign_count, None);
@@ -790,5 +861,6 @@ fn make_eddsa_auth_response(
         authenticator_data: auth_data_bytes,
         signature: sig.as_ref().to_vec(),
         user_handle: None,
+        credential_id: cred_id.to_vec(),
     })
 }

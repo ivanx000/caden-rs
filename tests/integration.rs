@@ -102,6 +102,7 @@ impl Fixture {
             authenticator_data: auth_data,
             signature: sig.as_ref().to_vec(),
             user_handle: None,
+            credential_id: self.cred_id.clone(),
         }
     }
 }
@@ -940,6 +941,7 @@ fn test_authentication_vector() {
         authenticator_data: v.authenticator_data.clone(),
         signature: v.signature.clone(),
         user_handle: None,
+        credential_id: v.credential_id.clone(),
     };
 
     let result = rp
@@ -1279,6 +1281,7 @@ impl RsaFixture {
             authenticator_data: auth_data,
             signature: sig,
             user_handle: None,
+            credential_id: self.cred_id.clone(),
         }
     }
 }
@@ -1534,6 +1537,7 @@ impl EdDsaFixture {
             authenticator_data: auth_data,
             signature: sig.as_ref().to_vec(),
             user_handle: None,
+            credential_id: self.cred_id.clone(),
         }
     }
 }
@@ -1730,6 +1734,7 @@ impl Es384Fixture {
             authenticator_data: auth_data,
             signature: sig.as_ref().to_vec(),
             user_handle: None,
+            credential_id: self.cred_id.clone(),
         }
     }
 }
@@ -1920,6 +1925,7 @@ fn no_panic_on_random_authentication_input() {
             authenticator_data: garbage.clone(),
             signature: garbage,
             user_handle: None,
+            credential_id: vec![0xABu8; 16],
         };
 
         // Must return Err, never panic.
@@ -2263,6 +2269,7 @@ fn authentication_with_extension_data_exposes_extensions() {
         authenticator_data: auth_data_bytes,
         signature: sig.as_ref().to_vec(),
         user_handle: None,
+        credential_id: fixture.cred_id.clone(),
     };
 
     let result = rp
@@ -2378,6 +2385,110 @@ fn single_use_enforcement_allows_distinct_challenges() {
     let r2 = fixture2.make_registration_response(&ch2.bytes, ORIGIN, RP_ID, 0x41, 1);
     rp.verify_registration(&ch2, &r2, b"uid2")
         .expect("second registration with a different challenge should succeed");
+}
+
+// ─── Discoverable credential / begin_authentication tests ────────────────────
+
+#[test]
+fn begin_authentication_returns_credential_id_and_user_handle() {
+    let rp = RelyingParty::new(RP_ID, ORIGIN, "Test RP");
+    let fixture = Fixture::new();
+    let credential = register_credential(&rp, &fixture);
+
+    let ch = Challenge::new().unwrap();
+    let response = fixture.make_auth_response(&ch.bytes, ORIGIN, RP_ID, 2);
+
+    let (cred_id, user_handle) = rp
+        .begin_authentication(&response)
+        .expect("begin_authentication should succeed");
+
+    assert_eq!(cred_id, fixture.cred_id);
+    assert!(user_handle.is_none());
+
+    // Caller can now look up the credential and call verify_authentication.
+    let result = rp
+        .verify_authentication(&credential, &ch, &response)
+        .expect("full verification after begin_authentication should succeed");
+    assert_eq!(result.new_sign_count, 2);
+}
+
+#[test]
+fn begin_authentication_returns_user_handle_when_present() {
+    let rp = RelyingParty::new(RP_ID, ORIGIN, "Test RP");
+    let fixture = Fixture::new();
+
+    let ch = Challenge::new().unwrap();
+    let client_data_bytes = make_client_data_json_bytes("webauthn.get", &ch.bytes, ORIGIN);
+    let auth_data = make_authenticator_data(RP_ID, 0x01, 2, None);
+    let client_data_hash = webauthn::crypto::sha256(&client_data_bytes);
+    let mut signed_data = auth_data.clone();
+    signed_data.extend_from_slice(&client_data_hash);
+    let sig = fixture.key_pair.sign(&fixture.rng, &signed_data).unwrap();
+
+    let response = AuthenticatorAssertionResponse {
+        client_data_json: client_data_bytes,
+        authenticator_data: auth_data,
+        signature: sig.as_ref().to_vec(),
+        user_handle: Some(b"user-123".to_vec()),
+        credential_id: fixture.cred_id.clone(),
+    };
+
+    let (cred_id, user_handle) = rp.begin_authentication(&response).unwrap();
+    assert_eq!(cred_id, fixture.cred_id);
+    assert_eq!(user_handle, Some(b"user-123".to_vec()));
+}
+
+#[test]
+fn begin_authentication_rejects_empty_credential_id() {
+    let rp = RelyingParty::new(RP_ID, ORIGIN, "Test RP");
+    let fixture = Fixture::new();
+    let ch = Challenge::new().unwrap();
+    let mut response = fixture.make_auth_response(&ch.bytes, ORIGIN, RP_ID, 2);
+    response.credential_id = vec![]; // clear the ID
+
+    let err = rp.begin_authentication(&response).unwrap_err();
+    assert!(
+        matches!(err, WebAuthnError::MissingCredentialId),
+        "expected MissingCredentialId, got {err:?}"
+    );
+}
+
+#[test]
+fn passkey_flow_begin_then_verify_end_to_end() {
+    // Simulate the full discoverable credential flow:
+    // 1. Register without knowing the credential ID in advance.
+    // 2. Issue a challenge with no allowCredentials hint.
+    // 3. Receive an assertion that carries the credential ID in rawId.
+    // 4. Use begin_authentication to extract the ID, look up the credential,
+    //    then call verify_authentication.
+    let rp = RelyingParty::new(RP_ID, ORIGIN, "Test RP");
+    let fixture = Fixture::new();
+
+    // Step 1: register.
+    let reg_ch = Challenge::new().unwrap();
+    let reg_response = fixture.make_registration_response(&reg_ch.bytes, ORIGIN, RP_ID, 0x41, 1);
+    let stored_credential = rp
+        .verify_registration(&reg_ch, &reg_response, b"uid")
+        .unwrap()
+        .credential;
+
+    // Step 2–3: authenticator returns assertion with rawId embedded.
+    let auth_ch = Challenge::new().unwrap();
+    let assertion = fixture.make_auth_response(&auth_ch.bytes, ORIGIN, RP_ID, 2);
+
+    // Step 4a: server calls begin_authentication to read the credential ID.
+    let (returned_cred_id, _user_handle) = rp.begin_authentication(&assertion).unwrap();
+    assert_eq!(
+        returned_cred_id, stored_credential.id,
+        "credential ID from response must match the registered credential"
+    );
+
+    // Step 4b: server looks up the credential (here: trivially found) and verifies.
+    let result = rp
+        .verify_authentication(&stored_credential, &auth_ch, &assertion)
+        .expect("passkey flow verify_authentication should succeed");
+    assert_eq!(result.new_sign_count, 2);
+    assert!(result.user_present);
 }
 
 // ─── Multi-origin tests ───────────────────────────────────────────────────────

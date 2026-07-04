@@ -57,6 +57,7 @@
 //! #     authenticator_data: vec![],
 //! #     signature: vec![],
 //! #     user_handle: None,
+//! #     credential_id: vec![],
 //! # };
 //!
 //! // Verify the assertion and update the stored sign count.
