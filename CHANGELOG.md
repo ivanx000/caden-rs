@@ -9,6 +9,34 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [0.7.0] — 2026-07-03
+
+### Added
+
+- **`backup_state` field on `Credential`** — tracks whether the credential's
+  private key is currently backed up to a cloud or sync service, derived from
+  the BS flag in `authenticatorData`. Complements the existing `backup_eligible`
+  field; both fields are exposed in `RegistrationResult` and
+  `AuthenticationResult`. `serde` serialization round-trips the field correctly.
+
+- **EdDSA (Ed25519) in `examples/demo.rs`** — the end-to-end demo now exercises
+  the full EdDSA ceremony: registration, successful authentication, and replay
+  attack rejection, mirroring the ES256/RS256/ES384 blocks already present.
+
+- **ES384 in `examples/demo.rs`** — the end-to-end demo now exercises the full
+  ES384 ceremony: registration, successful authentication, and replay attack
+  rejection.
+
+- **EdDSA advertised in `examples/server.rs`** — `POST /register/begin` now
+  includes `{ type: "public-key", alg: -8 }` (EdDSA/Ed25519) in
+  `pub_key_cred_params`, alongside ES256 (-7), ES384 (-35), and RS256 (-257).
+
+- **ES384 advertised in `examples/server.rs`** — `POST /register/begin` now
+  includes `{ type: "public-key", alg: -35 }` (ES384/P-384) in
+  `pub_key_cred_params`.
+
+---
+
 ## [0.6.0] — 2026-07-01
 
 ### Added
@@ -219,6 +247,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - **End-to-end demo** — `examples/demo.rs` exercises ES256 + RS256 registration, authentication,
   and replay attack rejection entirely in software
 
+[0.7.0]: https://github.com/ivanxie/caden-rs/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/ivanxie/caden-rs/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/ivanxie/caden-rs/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/ivanxie/caden-rs/compare/v0.3.0...v0.4.0
