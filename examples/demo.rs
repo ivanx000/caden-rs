@@ -7,21 +7,25 @@
 //! Run with: `cargo run --example demo`
 //!
 //! The demo exercises:
-//! 1. ES256 Registration   — generate P-256 keypair, build authenticator data, verify
-//! 2. ES256 Authentication — sign a challenge, verify signature and sign count
-//! 3. ES256 Replay attack  — demonstrate that reusing a sign count is rejected
-//! 4. RS256 Registration   — simulate RSA authenticator, verify RSA public key
-//! 5. RS256 Authentication — sign with RSA PKCS#1 v1.5, verify RS256 signature
-//! 6. RS256 Replay attack  — demonstrate that replay is rejected for RS256 too
-//! 7. ES384 Registration   — generate P-384 keypair, build authenticator data, verify
-//! 8. ES384 Authentication — sign a challenge, verify ES384 signature and sign count
-//! 9. ES384 Replay attack  — demonstrate that replay is rejected for ES384 too
+//!  1. ES256 Registration   — generate P-256 keypair, build authenticator data, verify
+//!  2. ES256 Authentication — sign a challenge, verify signature and sign count
+//!  3. ES256 Replay attack  — demonstrate that reusing a sign count is rejected
+//!  4. RS256 Registration   — simulate RSA authenticator, verify RSA public key
+//!  5. RS256 Authentication — sign with RSA PKCS#1 v1.5, verify RS256 signature
+//!  6. RS256 Replay attack  — demonstrate that replay is rejected for RS256 too
+//!  7. ES384 Registration   — generate P-384 keypair, build authenticator data, verify
+//!  8. ES384 Authentication — sign a challenge, verify ES384 signature and sign count
+//!  9. ES384 Replay attack  — demonstrate that replay is rejected for ES384 too
+//! 10. EdDSA Registration   — generate Ed25519 keypair, build authenticator data, verify
+//! 11. EdDSA Authentication — sign a challenge, verify EdDSA signature and sign count
+//! 12. EdDSA Replay attack  — demonstrate that replay is rejected for EdDSA too
 
 use anyhow::{Context, Result};
 use ciborium::value::Value;
 use ring::rand::SystemRandom;
 use ring::signature::{
-    EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_ASN1_SIGNING, ECDSA_P384_SHA384_ASN1_SIGNING,
+    EcdsaKeyPair, Ed25519KeyPair, KeyPair, ECDSA_P256_SHA256_ASN1_SIGNING,
+    ECDSA_P384_SHA384_ASN1_SIGNING,
 };
 
 use webauthn::{
@@ -408,6 +412,92 @@ fn main() -> Result<()> {
         Err(e) => return Err(e.into()),
     }
 
+    // ── EdDSA: Step 10: Registration ceremony ────────────────────────────────
+    println!("\n[EdDSA Registration]");
+
+    let ed_pkcs8 = Ed25519KeyPair::generate_pkcs8(&rng)
+        .map_err(|e| anyhow::anyhow!("failed to generate Ed25519 PKCS8 keypair: {e}"))?;
+    let ed_key_pair = Ed25519KeyPair::from_pkcs8(ed_pkcs8.as_ref())
+        .map_err(|e| anyhow::anyhow!("failed to load Ed25519 key pair: {e}"))?;
+
+    let ed_public_key_bytes = ed_key_pair.public_key().as_ref().to_vec(); // 32 bytes
+
+    let mut ed_cred_id = vec![0u8; 16];
+    ring::rand::SecureRandom::fill(&rng, &mut ed_cred_id)
+        .map_err(|e| anyhow::anyhow!("failed to generate EdDSA credential ID: {e}"))?;
+
+    let ed_reg_challenge = Challenge::new().context("failed to generate EdDSA challenge")?;
+    let ed_client_data_json =
+        make_client_data_json_bytes("webauthn.create", &ed_reg_challenge.bytes, ORIGIN);
+    let ed_cose_key = encode_eddsa_cose_key(&ed_public_key_bytes);
+    let ed_reg_auth_data =
+        make_authenticator_data(RP_ID, 0x41, 0, Some((&ed_cred_id, &ed_cose_key)));
+    let ed_att_obj = make_attestation_object(&ed_reg_auth_data);
+
+    let ed_reg_response = AuthenticatorAttestationResponse {
+        client_data_json: ed_client_data_json,
+        attestation_object: ed_att_obj,
+    };
+
+    let ed_reg_result = rp
+        .verify_registration(&ed_reg_challenge, &ed_reg_response, USER_ID)
+        .context("EdDSA registration verification failed")?;
+
+    let ed_cred_id_hex: String = ed_reg_result
+        .credential
+        .id
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+
+    println!("  Registration successful");
+    println!("  Credential ID: {ed_cred_id_hex}");
+    println!("  Algorithm:     EdDSA");
+    println!("  Sign count:    {}", ed_reg_result.credential.sign_count);
+
+    let mut stored_eddsa = ed_reg_result.credential;
+
+    // ── EdDSA: Step 11: Authentication ceremony ───────────────────────────────
+    println!("\n[EdDSA Authentication]");
+
+    let ed_auth_challenge = Challenge::new().context("failed to generate challenge")?;
+    let ed_auth_response =
+        make_eddsa_auth_response(&ed_key_pair, &ed_auth_challenge.bytes, RP_ID, ORIGIN, 1)?;
+
+    let ed_auth_result = rp
+        .verify_authentication(&stored_eddsa, &ed_auth_challenge, &ed_auth_response)
+        .context("EdDSA authentication failed")?;
+
+    println!("  Authentication successful");
+    println!(
+        "  Sign count:    {} → updated to {}",
+        stored_eddsa.sign_count, ed_auth_result.new_sign_count
+    );
+    println!("  User present:  {}", ed_auth_result.user_present);
+
+    stored_eddsa.sign_count = ed_auth_result.new_sign_count;
+
+    // ── EdDSA: Step 12: Replay attack demonstration ───────────────────────────
+    println!("\n[EdDSA Replay Attack Prevention]");
+
+    let ed_replay_challenge = Challenge::new().context("failed to generate challenge")?;
+    let ed_replay_response = make_eddsa_auth_response(
+        &ed_key_pair,
+        &ed_replay_challenge.bytes,
+        RP_ID,
+        ORIGIN,
+        1, // same sign count — replay
+    )?;
+
+    match rp.verify_authentication(&stored_eddsa, &ed_replay_challenge, &ed_replay_response) {
+        Err(webauthn::WebAuthnError::SignCountInvalid { stored, received }) => {
+            println!("  Replay attack correctly rejected");
+            println!("  Error: Sign count invalid: stored {stored}, received {received}");
+        }
+        Ok(_) => panic!("BUG: EdDSA replay attack should have been rejected!"),
+        Err(e) => return Err(e.into()),
+    }
+
     println!("\n─────────────────────────────────────");
     println!("All checks passed.");
     Ok(())
@@ -659,6 +749,46 @@ fn make_rs256_auth_response(
         client_data_json: client_data_bytes,
         authenticator_data: auth_data_bytes,
         signature: sig,
+        user_handle: None,
+    })
+}
+
+fn encode_eddsa_cose_key(public_key: &[u8]) -> Vec<u8> {
+    assert_eq!(public_key.len(), 32, "expected 32-byte Ed25519 public key");
+    let cose_key = Value::Map(vec![
+        (Value::Integer(1i64.into()), Value::Integer(1i64.into())), // kty: OKP
+        (Value::Integer(3i64.into()), Value::Integer((-8i64).into())), // alg: EdDSA
+        (Value::Integer((-1i64).into()), Value::Integer(6i64.into())), // crv: Ed25519
+        (
+            Value::Integer((-2i64).into()),
+            Value::Bytes(public_key.to_vec()),
+        ), // x: raw public key
+    ]);
+    let mut buf = Vec::new();
+    ciborium::into_writer(&cose_key, &mut buf).expect("CBOR encoding should not fail");
+    buf
+}
+
+fn make_eddsa_auth_response(
+    key_pair: &Ed25519KeyPair,
+    challenge: &[u8],
+    rp_id: &str,
+    origin: &str,
+    sign_count: u32,
+) -> Result<AuthenticatorAssertionResponse> {
+    let client_data_bytes = make_client_data_json_bytes("webauthn.get", challenge, origin);
+    let auth_data_bytes = make_authenticator_data(rp_id, 0x01, sign_count, None);
+
+    let client_data_hash = webauthn::crypto::sha256(&client_data_bytes);
+    let mut signed_data = auth_data_bytes.clone();
+    signed_data.extend_from_slice(&client_data_hash);
+
+    let sig = key_pair.sign(&signed_data);
+
+    Ok(AuthenticatorAssertionResponse {
+        client_data_json: client_data_bytes,
+        authenticator_data: auth_data_bytes,
+        signature: sig.as_ref().to_vec(),
         user_handle: None,
     })
 }

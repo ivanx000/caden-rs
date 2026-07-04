@@ -221,6 +221,10 @@ async fn register_begin(
             },
             PubKeyCredParam {
                 r#type: "public-key",
+                alg: -8,
+            },
+            PubKeyCredParam {
+                r#type: "public-key",
                 alg: -35,
             },
             PubKeyCredParam {
