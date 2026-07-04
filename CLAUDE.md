@@ -42,19 +42,19 @@ The library follows the [W3C WebAuthn Level 3 specification](https://www.w3.org/
 |------|---------|
 | `src/lib.rs` | Public API surface: `RelyingParty`, wire types, re-exports |
 | `src/error.rs` | `WebAuthnError` enum + `Result<T>` alias |
-| `src/credential.rs` | `Credential`, `PublicKey { ES256, EdDSA, RS256 }`, `Challenge`, result types |
-| `src/algorithm.rs` | COSE algorithm constants: `COSE_ES256=-7`, `COSE_EDDSA=-8`, `COSE_RS256=-257`, kty values |
+| `src/credential.rs` | `Credential`, `PublicKey { ES256, ES384, EdDSA, RS256 }`, `Challenge`, result types |
+| `src/algorithm.rs` | COSE algorithm constants: `COSE_ES256=-7`, `COSE_ES384=-35`, `COSE_EDDSA=-8`, `COSE_RS256=-257`, kty/crv values |
 | `src/der.rs` | DER builder: `rsa_components_to_der(n,e)` → RSAPublicKey for ring |
-| `src/crypto.rs` | `sha256`, `verify_es256`, `verify_eddsa`, `verify_rs256`, `generate_challenge` |
+| `src/crypto.rs` | `sha256`, `verify_es256`, `verify_es384`, `verify_eddsa`, `verify_rs256`, `generate_challenge` |
 | `src/challenge.rs` | Challenge expiry helpers: `is_expired`, `CHALLENGE_MAX_AGE_SECS` |
 | `src/client_data.rs` | `clientDataJSON` base64url → JSON → `ClientData` |
 | `src/authenticator_data.rs` | Binary authenticator data → `AuthenticatorData`; `CoseKey` enum |
-| `src/attestation.rs` | Attestation verification: "none", "packed", "fido-u2f", "android-key" |
+| `src/attestation.rs` | Attestation verification: "none", "packed", "fido-u2f", "android-key", "apple", "tpm" |
 | `src/registration.rs` | §7.1 registration ceremony; dispatches `CoseKey` → `PublicKey` |
 | `src/authentication.rs` | §7.2 authentication ceremony; dispatches `PublicKey` → verifier |
-| `examples/demo.rs` | End-to-end demo: ES256 and RS256 registration/auth/replay |
+| `examples/demo.rs` | End-to-end demo: ES256, RS256, ES384, EdDSA registration/auth/replay |
 | `examples/server.rs` | Axum HTTP server: all 5 WebAuthn endpoints with in-memory state |
-| `tests/integration.rs` | Integration tests for ES256, EdDSA, and RS256 full ceremony flows |
+| `tests/integration.rs` | Integration tests for ES256, ES384, EdDSA, and RS256 full ceremony flows |
 
 ---
 

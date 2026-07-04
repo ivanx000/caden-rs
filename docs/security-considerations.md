@@ -27,7 +27,13 @@ A captured challenge + response could be replayed to authenticate without the
 authenticator. If the same challenge is accepted more than once, a man-in-the-middle
 who observed one authentication can impersonate the user in a second session.
 
-**This library does not enforce single-use** — this is the caller's responsibility.
+The library provides opt-in single-use enforcement via
+`RelyingParty::enforce_single_use_challenges(true)`. When enabled, an
+`Arc<Mutex<HashSet>>` of consumed challenge bytes is maintained across all clones
+of the `RelyingParty` instance; a duplicate challenge returns
+`WebAuthnError::ChallengeAlreadyUsed`.
+
+Without this opt-in, **single-use enforcement is the caller's responsibility**.
 After calling `verify_registration` or `verify_authentication`, mark the challenge
 as consumed in your session store and reject any future presentation of it.
 
@@ -205,13 +211,13 @@ if requires_uv && !result.user_verified {
 
 | Property | Notes |
 |----------|-------|
-| Challenge single-use | Mark challenge as consumed in your session store after use |
+| Challenge single-use | Use `enforce_single_use_challenges(true)` on the RP, or mark consumed in your session store |
 | Challenge storage | Store server-side; never trust the client to return the challenge |
 | Credential lookup | Look up stored credential by credential ID before calling verify |
 | Sign count update | Write `auth_result.new_sign_count` to your database after success |
 | UV enforcement | Check `auth_result.user_verified` if your flow requires it |
 | HTTPS enforcement | WebAuthn ceremonies only work in secure contexts |
-| Attestation trust | Only `"none"` attestation is verified; device provenance is unverified |
+| Attestation trust | Signatures + x5c chain order verified for all formats; root against FIDO/Apple MDS is **Caller**'s responsibility |
 
 ---
 
@@ -219,18 +225,23 @@ if requires_uv && !result.user_verified {
 
 ### Full attestation chain
 
-This library verifies attestation signatures for `"none"`, `"packed"`,
-`"fido-u2f"`, and `"android-key"` formats. However, it does **not** validate
-attestation certificate chains against the FIDO Metadata Service (MDS). This means:
-- Attestation signatures are checked (the cert's key signed the data)
-- But you cannot confirm the cert was issued by a genuine manufacturer root
-- A software authenticator could present a self-signed cert and pass signature checks
-- The authenticator model, firmware version, and hardware provenance are unverifiable
+This library verifies attestation signatures, `x5c` chain order (each certificate
+signed by the next), and an optional configurable trust anchor set
+(`RelyingParty::trust_anchors()`) for all supported formats: `"none"`, `"packed"`,
+`"fido-u2f"`, `"android-key"`, `"apple"`, and `"tpm"`. However, it does **not**
+validate chains against the FIDO Metadata Service (MDS). This means:
+
+- Attestation signatures are verified (the cert's key signed the data correctly)
+- x5c chain order is verified (each cert is signed by the next entry)
+- If trust anchors are configured, the root is pinned to those anchors
+- But you cannot confirm the root cert was issued by a genuine manufacturer
+  unless you supply the manufacturer's root as a trust anchor
+- Without MDS integration, device model, firmware version, and hardware provenance
+  cannot be independently verified
 
 For applications where device provenance matters (banking, government, enterprise),
-validate the certificate chain against the
-[FIDO Metadata Service (MDS)](https://fidoalliance.org/metadata/) after signature
-verification.
+configure `RelyingParty::trust_anchors()` with manufacturer roots fetched from the
+[FIDO Metadata Service (MDS)](https://fidoalliance.org/metadata/).
 
 ### Token binding
 
@@ -261,21 +272,23 @@ determine which users are registered, so treat the credential table as sensitive
 
 ## Algorithm considerations
 
-### ES256 vs RS256
+### Supported algorithms
 
-| Property | ES256 (ECDSA P-256) | RS256 (RSA 2048) |
-|----------|---------------------|------------------|
-| COSE alg ID | -7 | -257 |
-| Key size | 64 bytes (x+y) | ≥256 bytes modulus |
-| Signature size | 64–72 bytes (DER ASN.1) | 256 bytes (2048-bit) |
-| Speed | Fast | Slower |
-| Security level | ~128-bit | ~112-bit |
-| Common on | FIDO2 hardware keys, passkeys | Legacy FIDO U2F, older hardware |
+| Property | ES256 (P-256) | ES384 (P-384) | EdDSA (Ed25519) | RS256 (RSA 2048) |
+|----------|---------------|---------------|-----------------|------------------|
+| COSE alg ID | -7 | -35 | -8 | -257 |
+| Key size | 64 bytes (x+y) | 96 bytes (x+y) | 32 bytes | ≥256 bytes modulus |
+| Signature size | 64–72 bytes (DER ASN.1) | 96–104 bytes (DER ASN.1) | 64 bytes (raw) | 256 bytes (2048-bit) |
+| Speed | Fast | Fast | Fastest | Slower |
+| Security level | ~128-bit | ~192-bit | ~128-bit | ~112-bit |
+| Common on | FIDO2 hardware keys, passkeys | Platform authenticators | Some hardware keys | Legacy FIDO U2F, older hardware |
 
-Both algorithms are verified using `ring` with the same no-panic, no-custom-crypto
-guarantee. The COSE key type determines which path is taken:
+All algorithms are verified using `ring` with the same no-panic, no-custom-crypto
+guarantee. The COSE key type and algorithm determine which path is taken:
 
-- `kty=2` (EC2), `alg=-7` → `verify_es256` with ring's `ECDSA_P256_SHA256_ASN1`
+- `kty=2` (EC2), `alg=-7`, `crv=1` → `verify_es256` with ring's `ECDSA_P256_SHA256_ASN1`
+- `kty=2` (EC2), `alg=-35`, `crv=2` → `verify_es384` with ring's `ECDSA_P384_SHA384_ASN1`
+- `kty=1` (OKP), `alg=-8`, `crv=6` → `verify_eddsa` with ring's `ED25519`
 - `kty=3` (RSA), `alg=-257` → `rsa_components_to_der(n, e)` + `verify_rs256`
   with ring's `RSA_PKCS1_2048_8192_SHA256`
 
@@ -286,6 +299,7 @@ with `SignatureVerificationFailed`.
 
 ES256 is the mandatory-to-implement algorithm in the WebAuthn spec (§5.8.5). All
 FIDO2-certified authenticators support it. Modern passkey implementations use P-256.
+ES384 and EdDSA are supported for authenticators that prefer higher-security curves.
 RS256 is supported for backward compatibility with older FIDO U2F credentials and
 legacy authenticators that predate the FIDO2 era.
 
@@ -329,11 +343,11 @@ This library verifies the following attestation formats:
 |--------|-----------------|----------------------|
 | `"none"` | (no attestation provided) | — |
 | `"packed"` (self) | Signature using the credential key | — |
-| `"packed"` (basic, x5c present) | x5c presence detected | Cert chain against FIDO MDS |
-| `"fido-u2f"` | ECDSA-P256 signature over U2F verification data | Cert chain against FIDO MDS |
-| `"android-key"` | ECDSA-P256 signature; cert key == credential key | Cert chain against FIDO MDS |
-| `"apple"` | Apple nonce extension == SHA-256(authData \|\| clientDataHash); cert key == credential key | Cert chain against Apple MDS |
-| `"tpm"` | Not implemented | — |
+| `"packed"` (basic, x5c present) | Signature using leaf cert key; x5c chain order; optional trust anchor | Root against FIDO MDS |
+| `"fido-u2f"` | ECDSA-P256 signature over U2F verification data; x5c chain order; optional trust anchor | Root against FIDO MDS |
+| `"android-key"` | ECDSA-P256 signature; cert key == credential key; x5c chain order; optional trust anchor | Root against FIDO MDS |
+| `"apple"` | Apple nonce extension == SHA-256(authData \|\| clientDataHash); cert key == credential key; x5c chain order; optional trust anchor | Root against Apple MDS |
+| `"tpm"` | certInfo (magic, type, extraData, attested.name); pubArea key coordinates; x5c chain order; optional trust anchor | Root against FIDO MDS |
 
 **What certificate chain verification would add:** linking the attestation key
 back to a manufacturer's root certificate via the FIDO Metadata Service (MDS)
@@ -351,12 +365,12 @@ If you need full device provenance verification, integrate with the
 | Property | Enforced by | Notes |
 |----------|-------------|-------|
 | Challenge randomness | Library (`ring` CSPRNG) | 256 bits entropy |
-| Challenge single-use | **Caller** | Must invalidate after use |
+| Challenge single-use | Library (opt-in) or **Caller** | `enforce_single_use_challenges(true)`, or invalidate in session store |
 | Challenge expiry | Caller via `is_expired()` | Default 5 min |
 | Origin binding | Library | Exact match against `allowed_origins` list |
 | RP ID binding | Library | SHA-256 comparison |
 | User presence | Library | UP flag check |
-| Signature validity | Library (`ring` ECDSA/RSA) | Constant-time |
+| Signature validity | Library (`ring` ECDSA/EdDSA/RSA) | Constant-time |
 | Sign count monotonicity | Library | Non-zero counts only |
 | User verification | Library (opt-in) or Caller | Enable with `require_user_verification(true)`, or inspect `user_verified` per action |
 | HTTPS enforcement | **Caller** / infrastructure | Browsers require it |

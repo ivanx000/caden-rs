@@ -1,4 +1,4 @@
-[![CI](https://github.com/ivanx000/caden-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/ivanx000/caden-rs/actions/workflows/ci.yml) ![Rust](https://img.shields.io/badge/rust-1.70%2B-orange) ![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)
+[![CI](https://github.com/ivanx000/caden-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/ivanx000/caden-rs/actions/workflows/ci.yml) ![Rust](https://img.shields.io/badge/rust-1.88%2B-orange) ![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)
 
 # Caden
 
@@ -40,24 +40,26 @@ worthless without private keys), and password reuse (each site gets a unique key
 | Registration ceremony (W3C WebAuthn §7.1) | ✅ Implemented |
 | Authentication ceremony (W3C WebAuthn §7.2) | ✅ Implemented |
 | ES256 (ECDSA P-256 + SHA-256, COSE -7) | ✅ Implemented |
-| RS256 (RSA PKCS#1 v1.5 + SHA-256, COSE -257) | ✅ Implemented |
+| ES384 (ECDSA P-384 + SHA-384, COSE -35) | ✅ Implemented |
 | EdDSA / Ed25519 (COSE -8) | ✅ Implemented |
+| RS256 (RSA PKCS#1 v1.5 + SHA-256, COSE -257) | ✅ Implemented |
 | Multiple allowed origins (`RelyingParty::with_origins`) | ✅ Implemented |
 | `"none"` attestation format | ✅ Implemented |
 | Packed self-attestation (no x5c) | ✅ Implemented — signature fully verified |
-| Packed basic attestation (x5c present) | ⚠️ Detected, certificate chain not verified |
-| FIDO U2F attestation (`"fido-u2f"`) | ✅ Implemented — signature verified; cert chain requires FIDO MDS |
-| Android Key attestation (`"android-key"`) | ✅ Implemented — signature + key-match verified; cert chain requires FIDO MDS |
-| Apple attestation (`"apple"`) | ✅ Implemented — nonce extension + key-match verified; cert chain requires Apple MDS |
+| Packed basic attestation (x5c present) | ✅ Implemented — signature + x5c chain order verified; optional trust-anchor pinning via `trust_anchors()` |
+| FIDO U2F attestation (`"fido-u2f"`) | ✅ Implemented — signature + x5c chain order verified; cert chain requires FIDO MDS for full provenance |
+| Android Key attestation (`"android-key"`) | ✅ Implemented — signature + key-match + x5c chain order verified; cert chain requires FIDO MDS for full provenance |
+| Apple attestation (`"apple"`) | ✅ Implemented — nonce extension + key-match + x5c chain order verified; cert chain requires Apple MDS for full provenance |
+| TPM attestation (`"tpm"`) | ✅ Implemented — certInfo + pubArea + x5c chain order verified; cert chain requires FIDO MDS for full provenance |
 | UV flag enforcement (`require_user_verification`) | ✅ Implemented — opt-in via builder; off by default |
 | Algorithm allowlist (`allowed_algorithms`) | ✅ Implemented — opt-in via builder; empty = accept all |
+| Single-use challenge enforcement | ✅ Implemented — opt-in via `enforce_single_use_challenges(true)`; caller-managed by default |
 | Sign-count replay attack detection | ✅ Implemented |
 | Challenge generation (32-byte CSPRNG) | ✅ Implemented |
 | `#![forbid(unsafe_code)]` | ✅ Enforced at compile time |
 | No-panic guarantee on adversarial input | ✅ `#![deny(clippy::unwrap_used)]` |
 | Fixed test vectors (registration + authentication) | ✅ Implemented |
 | `serde` feature — Serialize/Deserialize on public types | ✅ Opt-in via `features = ["serde"]` |
-| TPM attestation | ❌ Not implemented |
 | Token binding | ❌ Not implemented |
 | FIDO Metadata Service (MDS) lookup | ❌ Not implemented |
 
@@ -115,7 +117,7 @@ stored.sign_count = auth_result.new_sign_count;
 ```
 
 Run the self-contained demo to see full registration → authentication → replay-attack
-sequences for both ES256 and RS256 without a browser:
+sequences for ES256, RS256, ES384, and EdDSA without a browser:
 
 ```
 cargo run --example demo
@@ -129,8 +131,8 @@ Expected output ends with: `All checks passed.`
 
 ### End-to-end demo
 
-Simulates full ES256 and RS256 registration → authentication → replay attack rejection
-entirely in software (no browser, no server):
+Simulates full ES256, RS256, ES384, and EdDSA registration → authentication → replay
+attack rejection entirely in software (no browser, no server):
 
 ```bash
 cargo run --example demo
@@ -171,7 +173,7 @@ curl -s -X POST http://localhost:3000/authenticate/begin \
 ## Running tests
 
 ```bash
-cargo test                        # all 209+ unit + integration + doc tests
+cargo test                        # all 255+ unit + integration + doc tests
 cargo test --features serde       # +5 serde round-trip tests
 cargo clippy -- -D warnings       # lint (zero-warning policy)
 cargo fmt --check                 # formatting
@@ -208,6 +210,8 @@ cargo package --dry-run           # crates.io readiness check
 - **Cryptographic signature** — the signature over `authData || SHA-256(clientDataJSON)`
   is verified using `ring`:
   - ES256: ECDSA P-256 with SHA-256 (`ring::signature::ECDSA_P256_SHA256_ASN1`)
+  - ES384: ECDSA P-384 with SHA-384 (`ring::signature::ECDSA_P384_SHA384_ASN1`)
+  - EdDSA: Ed25519 (`ring::signature::ED25519`)
   - RS256: RSA PKCS#1 v1.5 with SHA-256 (`ring::signature::RSA_PKCS1_2048_8192_SHA256`,
     minimum 2048-bit key enforced)
 

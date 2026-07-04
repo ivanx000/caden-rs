@@ -19,20 +19,23 @@ webauthn
 │
 ├── credential.rs           Domain types
 │   ├── Credential          Stored credential (post-registration)
-│   ├── PublicKey           ES256 { x, y } / EdDSA(bytes) / RS256 { n, e } public key wrapper
+│   ├── PublicKey           ES256 { x, y } / ES384 { x, y } / EdDSA(bytes) / RS256 { n, e } public key wrapper
 │   ├── Challenge           Random bytes + creation timestamp
 │   ├── RegistrationResult  Return value of verify_registration
 │   ├── AuthenticationResult Return value of verify_authentication
-│   └── AttestationType     None / SelfAttestation / Basic
+│   └── AttestationType     None / SelfAttestation / Basic / BasicVerified
 │
 ├── algorithm.rs            COSE algorithm + key-type constants
-│   ├── COSE_ES256 = -7     ECDSA P-256 with SHA-256
-│   ├── COSE_EDDSA = -8     Ed25519 EdDSA
-│   ├── COSE_RS256 = -257   RSA PKCS#1 v1.5 with SHA-256
-│   ├── COSE_KTY_OKP = 1    Octet Key Pair (Ed25519) key type
-│   ├── COSE_KTY_EC2 = 2    EC2 key type
-│   ├── COSE_KTY_RSA = 3    RSA key type
-│   └── COSE_CRV_P256 = 1   P-256 curve
+│   ├── COSE_ES256 = -7      ECDSA P-256 with SHA-256
+│   ├── COSE_ES384 = -35     ECDSA P-384 with SHA-384
+│   ├── COSE_EDDSA = -8      Ed25519 EdDSA
+│   ├── COSE_RS256 = -257    RSA PKCS#1 v1.5 with SHA-256
+│   ├── COSE_KTY_OKP = 1     Octet Key Pair (Ed25519) key type
+│   ├── COSE_KTY_EC2 = 2     EC2 key type
+│   ├── COSE_KTY_RSA = 3     RSA key type
+│   ├── COSE_CRV_P256 = 1    P-256 curve
+│   ├── COSE_CRV_P384 = 2    P-384 curve
+│   └── COSE_CRV_ED25519 = 6 Ed25519 curve
 │
 ├── der.rs                  Minimal DER builder for RSA public keys
 │   ├── rsa_components_to_der()  (n, e) → SEQUENCE { INTEGER n, INTEGER e }
@@ -41,6 +44,7 @@ webauthn
 ├── crypto.rs               Cryptographic primitives (delegated to ring)
 │   ├── sha256()            SHA-256 digest
 │   ├── verify_es256()      ECDSA P-256 verification
+│   ├── verify_es384()      ECDSA P-384 verification
 │   ├── verify_eddsa()      Ed25519 EdDSA verification
 │   ├── verify_rs256()      RSA PKCS#1 v1.5 SHA-256 verification
 │   └── generate_challenge() 32-byte CSPRNG challenge
@@ -60,13 +64,13 @@ webauthn
 │         └── CoseKey::RSA { alg, n, e }         for RS256
 │
 ├── attestation.rs          Attestation statement verification
-│   └── verify()            Supports "none", "packed", "fido-u2f", "android-key", "apple"
+│   └── verify()            Supports "none", "packed", "fido-u2f", "android-key", "apple", "tpm"
 │
 ├── registration.rs         §7.1 registration ceremony
-│   └── verify_registration()  Dispatches CoseKey → PublicKey::ES256 or ::RS256
+│   └── verify_registration()  Dispatches CoseKey → PublicKey::ES256 / ::ES384 / ::EdDSA / ::RS256
 │
 └── authentication.rs       §7.2 authentication ceremony
-    └── verify_authentication()  Dispatches PublicKey → verify_es256 or verify_rs256
+    └── verify_authentication()  Dispatches PublicKey → verify_es256 / verify_es384 / verify_eddsa / verify_rs256
 ```
 
 ---
@@ -95,11 +99,13 @@ AuthenticatorAttestationResponse
                       ├─ aaguid [0..16]
                       ├─ credential_id
                       └─ COSE key (CBOR) → parse_cose_key()
-                            ├─ kty=2 (EC2): x, y → 0x04 || x || y → PublicKey::ES256
+                            ├─ kty=2 (EC2), crv=1: x, y (32B each) → 0x04||x||y → PublicKey::ES256
+                            ├─ kty=2 (EC2), crv=2: x, y (48B each) → 0x04||x||y → PublicKey::ES384
+                            ├─ kty=1 (OKP), crv=6: x (32B) → PublicKey::EdDSA
                             └─ kty=3 (RSA): n, e → PublicKey::RS256
 
-→ attestation::verify(fmt, ...)   ["none", "packed", "fido-u2f", "android-key", "apple"]
-→ Credential { id, public_key, sign_count, user_id, rp_id, created_at, backup_eligible }
+→ attestation::verify(fmt, ...)   ["none", "packed", "fido-u2f", "android-key", "apple", "tpm"]
+→ Credential { id, public_key, sign_count, user_id, rp_id, created_at, backup_eligible, backup_state }
 → RegistrationResult { credential, attestation_type, backup_eligible, backup_state }
 ```
 
@@ -124,6 +130,7 @@ Stored Credential + AuthenticatorAssertionResponse
                │
         dispatch on PublicKey variant:
          ES256  → verify_es256()  [ring ECDSA_P256_SHA256_ASN1]
+         ES384  → verify_es384()  [ring ECDSA_P384_SHA384_ASN1]
          EdDSA  → verify_eddsa()  [ring ED25519]
          RS256  → rsa_components_to_der(n,e) → verify_rs256()
                    [ring RSA_PKCS1_2048_8192_SHA256]
@@ -185,11 +192,11 @@ independently of the rest of the verification logic.
 
 ### Algorithm dispatch
 
-`PublicKey` is an enum with three variants: `ES256 { x, y }`, `EdDSA(Vec<u8>)`,
-and `RS256 { n, e }`. The authentication ceremony matches on the variant and calls
-the appropriate verifier. Adding a fourth algorithm means extending the enum,
-adding a COSE parser branch, and adding a verifier function — no changes to the
-ceremony control flow.
+`PublicKey` is an enum with four variants: `ES256 { x, y }`, `ES384 { x, y }`,
+`EdDSA(Vec<u8>)`, and `RS256 { n, e }`. The authentication ceremony matches on
+the variant and calls the appropriate verifier. Adding a fifth algorithm means
+extending the enum, adding a COSE parser branch, and adding a verifier function —
+no changes to the ceremony control flow.
 
 ### Why does ES256 use the uncompressed point format?
 
@@ -217,6 +224,7 @@ returns 270 bytes (RSAPublicKey), not 294 bytes (SubjectPublicKeyInfo).
 | §7.1 Registration | `registration.rs` |
 | §7.2 Authentication | `authentication.rs` |
 | §8.2 Packed attestation | `attestation.rs::verify_packed` |
+| §8.3 TPM attestation | `attestation.rs::verify_tpm` |
 | §8.4 Android Key attestation | `attestation.rs::verify_android_key` |
 | §8.6 FIDO U2F attestation | `attestation.rs::verify_fido_u2f` |
 | §8.7 "none" attestation | `attestation.rs::verify` |
@@ -249,15 +257,10 @@ Every error in this library follows three rules:
 
 ## Known limitations and future work
 
-- **Certificate chain validation** — `"packed"` (basic), `"fido-u2f"`, and
-  `"android-key"` attestation signatures are verified, but the certificate chain
-  linking the attestation key back to a manufacturer root is not. Full chain
-  validation requires the FIDO Metadata Service (MDS).
-- **Apple attestation cert chain** — nonce extension and key-match verified; certificate
-  chain not verified (no Apple MDS trust anchors).
-- **TPM attestation** — not implemented; requires manufacturer-specific cert chains and is
-  out of scope.
-- **ES384 / ES512** — not supported; would require P-384/P-521 ring API.
-- **Extension data** — authenticator data extensions are silently ignored.
+- **FIDO Metadata Service** — attestation certificate chain order is verified for all
+  formats, and an optional trust anchor set can be pinned via `RelyingParty::trust_anchors()`.
+  However, full provenance verification (linking the chain to a genuine manufacturer root)
+  requires FIDO MDS integration, which is not implemented.
+- **ES512** — not supported; would require P-521 ring API.
 - **Token binding** — not checked.
 - **`crossOrigin` strict mode** — accepted by default. Enable `RelyingParty::reject_cross_origin(true)` to reject assertions with `crossOrigin: true` in `clientDataJSON` (§7.1 step 10 / §7.2 step 12).
