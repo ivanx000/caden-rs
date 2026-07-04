@@ -56,6 +56,12 @@ rcgen = "0.13"
 axum = "0.7"
 tokio = { version = "1", features = ["full"] }
 tower = "0.4"
+# Benchmarking
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "verification"
+harness = false
 
 [[example]]
 name = "demo"
