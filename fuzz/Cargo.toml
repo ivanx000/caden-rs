@@ -1,0 +1,38 @@
+[package]
+name = "caden-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+# The package is named "caden" but its lib target is named "webauthn".
+# The `package` key tells Cargo to find the "caden" package at that path;
+# the dep alias "webauthn" matches the lib target name so fuzz target code
+# can `use webauthn::...` without changes.
+[dependencies.webauthn]
+path = ".."
+package = "caden"
+
+# Each fuzz target is its own binary. cargo-fuzz requires nightly Rust because
+# it uses -Z sanitizer=address and -C instrument-coverage.
+[[bin]]
+name = "fuzz_registration"
+path = "fuzz_targets/fuzz_registration.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_authentication"
+path = "fuzz_targets/fuzz_authentication.rs"
+test = false
+doc = false
+
+# The fuzz workspace is isolated from the parent so that `cargo build` at the
+# project root does not try to compile libfuzzer-sys (which only works on nightly).
+[workspace]
+members = ["."]

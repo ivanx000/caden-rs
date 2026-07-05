@@ -619,13 +619,14 @@ For a single-origin RP the string is identical to the old single-origin display.
 ### Pipeline overview
 
 GitHub Actions runs `.github/workflows/ci.yml` on every push and pull request to `main`.
-Three jobs run in parallel:
+Four jobs run in parallel:
 
 | Job | What it runs |
 |-----|-------------|
 | **Build & Test** | `cargo build`, `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test`, `cargo doc --no-deps`, `cargo run --example demo` |
 | **MSRV (1.88)** | `cargo build` + `cargo test` on Rust 1.88 |
 | **Security Audit** | `cargo audit` via `cargo-audit` |
+| **Fuzz Targets (build check)** | `cargo fuzz build` on nightly — verifies both fuzz targets compile |
 
 ### Always run `cargo fmt` before committing
 
@@ -688,6 +689,60 @@ If audit fails on CI, check the advisory at `rustsec.org/advisories/<ID>` and ei
 - Upgrade the affected dependency to a patched version, or
 - Add a `[patch]` or `[dependencies]` version bump in `Cargo.toml`.
 
+### cargo-fuzz — coverage-guided fuzzing
+
+Two libFuzzer-backed fuzz targets live in `fuzz/`:
+
+| Target | What it fuzzes |
+|--------|---------------|
+| `fuzz_registration` | `verify_registration` — JSON parsing, CBOR attestation decoding, authenticator data binary parsing |
+| `fuzz_authentication` | `verify_authentication` — JSON parsing, authenticator data binary parsing, DER signature parsing |
+
+Fuzz targets require **nightly Rust** (libFuzzer uses `-Z sanitizer=address`). CI only
+builds the targets to catch compile errors; sustained fuzzing runs locally.
+
+**Input layout** — both targets use a length-prefix scheme so libFuzzer can independently
+mutate each field:
+
+- `fuzz_registration`: `[cdj_len: u16 LE][client_data_json bytes][attestation_object bytes]`
+- `fuzz_authentication`: `[cdj_len: u16 LE][adl: u16 LE][client_data_json bytes][authenticator_data bytes][signature bytes]`
+
+**Seed corpus** lives in `fuzz/corpus/`. Each target has one seed that passes the
+challenge and origin checks and reaches the CBOR/binary parsing paths.
+
+```bash
+# One-time setup (requires nightly):
+rustup install nightly
+cargo install cargo-fuzz
+
+# Build targets (compile check, no fuzzing):
+cargo fuzz build
+
+# Run fuzzing — Ctrl-C to stop; corpus is saved in fuzz/corpus/<target>/:
+cargo fuzz run fuzz_registration
+cargo fuzz run fuzz_authentication
+
+# Run with AddressSanitizer for deeper memory safety checking:
+cargo fuzz run fuzz_registration -- -sanitize=address
+
+# Brief smoke run (30 s per target, good for CI experimentation):
+cargo fuzz run fuzz_registration -- -max_total_time=30
+cargo fuzz run fuzz_authentication -- -max_total_time=30
+
+# Show coverage report after a fuzzing session:
+cargo fuzz coverage fuzz_registration
+```
+
+**If a fuzz-generated crash is found**, cargo-fuzz saves the crashing input to
+`fuzz/artifacts/<target>/`. Reproduce with:
+```bash
+cargo fuzz run fuzz_registration fuzz/artifacts/fuzz_registration/crash-<hash>
+```
+
+**If a fuzz CI job fails** (build-check step), the fuzz target won't compile. Fix the
+compile error in `fuzz/fuzz_targets/<target>.rs` and run `cargo fuzz build` locally
+to confirm.
+
 ### Fixing a failing CI build
 
 1. Check the failing job in the GitHub Actions tab.
@@ -695,3 +750,4 @@ If audit fails on CI, check the advisory at `rustsec.org/advisories/<ID>` and ei
 3. Fix the issue, run `/check` to confirm all six steps pass, then push.
 4. For MSRV failures: read the error — it names the exact version required (e.g. "requires rustc 1.88.0"). Update `rust-version` in `Cargo.toml`, the toolchain in `ci.yml`, the cache key suffix, and all `1.XX` references in `CLAUDE.md` to match.
 5. For audit failures: upgrade the flagged dependency or open an issue to track it.
+6. For fuzz-build failures: fix the compile error in `fuzz/fuzz_targets/` and run `cargo fuzz build` locally on nightly.
