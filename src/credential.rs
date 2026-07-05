@@ -3,6 +3,8 @@
 use std::collections::HashMap;
 use std::time::{Duration, SystemTime};
 
+use crate::extensions::ExtensionView;
+
 use ciborium::value::Value;
 
 use ring::rand::{SecureRandom, SystemRandom};
@@ -297,6 +299,34 @@ pub enum AttestationType {
     /// via [`crate::RelyingParty::trust_anchors`]. Device provenance is
     /// cryptographically anchored to the configured CA set.
     BasicVerified,
+}
+
+// ─── Typed extension accessors ────────────────────────────────────────────────
+
+impl RegistrationResult {
+    /// Return a typed view over the authenticator extension data, if any.
+    ///
+    /// Returns `None` when the authenticator did not include extension data
+    /// (the ED flag was not set). When `Some`, the returned [`ExtensionView`]
+    /// provides typed accessors for [`crate::extensions::CredProps`], `appid`,
+    /// and [`crate::extensions::PrfExtension`]. The raw `extensions` field
+    /// remains accessible for extensions not covered by the typed accessors.
+    pub fn extensions(&self) -> Option<ExtensionView<'_>> {
+        self.extensions.as_ref().map(ExtensionView::new)
+    }
+}
+
+impl AuthenticationResult {
+    /// Return a typed view over the authenticator extension data, if any.
+    ///
+    /// Returns `None` when the authenticator did not include extension data
+    /// (the ED flag was not set). When `Some`, the returned [`ExtensionView`]
+    /// provides typed accessors for [`crate::extensions::CredProps`], `appid`,
+    /// and [`crate::extensions::PrfExtension`]. The raw `extensions` field
+    /// remains accessible for extensions not covered by the typed accessors.
+    pub fn extensions(&self) -> Option<ExtensionView<'_>> {
+        self.extensions.as_ref().map(ExtensionView::new)
+    }
 }
 
 // ─── Serde round-trip tests ───────────────────────────────────────────────────
