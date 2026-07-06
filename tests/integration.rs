@@ -2281,6 +2281,108 @@ fn authentication_with_extension_data_exposes_extensions() {
 }
 
 #[test]
+fn registration_typed_cred_props_accessor() {
+    // Same setup as registration_with_extension_data_exposes_extensions but
+    // exercises the typed extensions() accessor instead of the raw field.
+    let fixture = Fixture::new();
+    let rp = RelyingParty::new(RP_ID, ORIGIN, "Test RP");
+
+    let cose_cbor = encode_cose_key(&fixture.public_key_bytes);
+    let ext_map = Value::Map(vec![(
+        Value::Text("credProps".to_string()),
+        Value::Map(vec![(Value::Text("rk".to_string()), Value::Bool(true))]),
+    )]);
+    let mut ext_bytes = Vec::new();
+    ciborium::into_writer(&ext_map, &mut ext_bytes).unwrap();
+
+    let mut at_section = vec![0u8; 16];
+    at_section.extend_from_slice(&(fixture.cred_id.len() as u16).to_be_bytes());
+    at_section.extend_from_slice(&fixture.cred_id);
+    at_section.extend_from_slice(&cose_cbor);
+    at_section.extend_from_slice(&ext_bytes);
+
+    let auth_data = {
+        let rp_hash = webauthn::crypto::sha256(RP_ID.as_bytes());
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&rp_hash);
+        buf.push(0xC1); // UP | AT | ED
+        buf.extend_from_slice(&1u32.to_be_bytes());
+        buf.extend_from_slice(&at_section);
+        buf
+    };
+
+    let challenge = Challenge::new().unwrap();
+    let client_data_json = make_client_data_json_bytes("webauthn.create", &challenge.bytes, ORIGIN);
+    let response = AuthenticatorAttestationResponse {
+        client_data_json,
+        attestation_object: make_attestation_object(&auth_data, "none"),
+    };
+    let result = rp
+        .verify_registration(&challenge, &response, b"uid")
+        .expect("registration with credProps extension should succeed");
+
+    let view = result.extensions().expect("extensions() must return Some");
+    let cp = view.cred_props().expect("cred_props() must return Some");
+    assert_eq!(cp.rk, Some(true));
+}
+
+#[test]
+fn authentication_typed_appid_accessor() {
+    // Same setup as authentication_with_extension_data_exposes_extensions but
+    // exercises the typed extensions() accessor instead of the raw field.
+    let fixture = Fixture::new();
+    let rp = RelyingParty::new(RP_ID, ORIGIN, "Test RP");
+
+    let reg_challenge = Challenge::new().unwrap();
+    let reg_response =
+        fixture.make_registration_response(&reg_challenge.bytes, ORIGIN, RP_ID, 0x41, 1);
+    let credential = rp
+        .verify_registration(&reg_challenge, &reg_response, b"uid")
+        .unwrap()
+        .credential;
+
+    let ext_map = Value::Map(vec![(Value::Text("appid".to_string()), Value::Bool(true))]);
+    let mut ext_bytes = Vec::new();
+    ciborium::into_writer(&ext_map, &mut ext_bytes).unwrap();
+
+    let auth_data_bytes = {
+        let rp_hash = webauthn::crypto::sha256(RP_ID.as_bytes());
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&rp_hash);
+        buf.push(0x81); // UP | ED
+        buf.extend_from_slice(&2u32.to_be_bytes());
+        buf.extend_from_slice(&ext_bytes);
+        buf
+    };
+
+    let client_data_bytes =
+        make_client_data_json_bytes("webauthn.get", &reg_challenge.bytes, ORIGIN);
+    let auth_challenge = Challenge {
+        bytes: reg_challenge.bytes.clone(),
+        created_at: std::time::SystemTime::now(),
+    };
+    let client_data_hash = webauthn::crypto::sha256(&client_data_bytes);
+    let mut signed_data = auth_data_bytes.clone();
+    signed_data.extend_from_slice(&client_data_hash);
+    let sig = fixture.key_pair.sign(&fixture.rng, &signed_data).unwrap();
+
+    let auth_response = AuthenticatorAssertionResponse {
+        client_data_json: client_data_bytes,
+        authenticator_data: auth_data_bytes,
+        signature: sig.as_ref().to_vec(),
+        user_handle: None,
+        credential_id: fixture.cred_id.clone(),
+    };
+
+    let result = rp
+        .verify_authentication(&credential, &auth_challenge, &auth_response)
+        .expect("authentication with appid extension should succeed");
+
+    let view = result.extensions().expect("extensions() must return Some");
+    assert_eq!(view.appid(), Some(true));
+}
+
+#[test]
 fn registration_without_extension_data_has_none_extensions() {
     let fixture = Fixture::new();
     let rp = RelyingParty::new(RP_ID, ORIGIN, "Test RP");
