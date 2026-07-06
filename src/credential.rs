@@ -23,6 +23,7 @@ use crate::error::{Result, WebAuthnError};
 ///   older YubiKey 4-series devices and Windows Hello.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub enum PublicKey {
     /// P-256 ECDSA public key (COSE alg `-7`, kty `2`).
     ///
@@ -278,6 +279,7 @@ pub struct AuthenticationResult {
 /// The level of attestation the authenticator provided.
 #[derive(Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub enum AttestationType {
     /// The authenticator explicitly provided no attestation (`"fmt": "none"`).
     /// The credential is still usable, but device provenance cannot be verified.
