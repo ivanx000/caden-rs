@@ -9,6 +9,33 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [0.8.0] — 2026-07-05
+
+### Added
+
+- **Typed extension accessors** (`src/extensions.rs`) — new public module with
+  three typed extension types:
+  - [`CredProps`] (`"credProps"`, §10.4) — `rk: Option<bool>` indicating whether
+    the credential was created as a discoverable credential.
+  - `appid` (`"appid"`, §10.1) — `Option<bool>` indicating whether the legacy
+    U2F App ID substitution was applied.
+  - [`PrfExtension`] / [`PrfValues`] (`"prf"`) — typed PRF output with `first`
+    and optional `second` byte-string results.
+  - [`ExtensionView`] — a borrow of the raw extension map with typed accessor
+    methods `cred_props()`, `appid()`, and `prf()`.
+
+- **`RegistrationResult::extensions()`** and **`AuthenticationResult::extensions()`**
+  — new methods returning `Option<ExtensionView<'_>>`. When extension data is
+  present these provide typed accessors; the raw `extensions` field remains
+  accessible for extensions not yet modelled by the typed API.
+
+- **`#[non_exhaustive]`** on `AttestationType`, `PublicKey`, and `WebAuthnError`
+  — adding any new variant to these public enums is no longer a semver-breaking
+  change. Downstream callers matching exhaustively will need a `_ => ...`
+  wildcard arm; callers that use `matches!()` or `if let` are unaffected.
+
+---
+
 ## [0.7.0] — 2026-07-03
 
 ### Added
@@ -247,6 +274,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - **End-to-end demo** — `examples/demo.rs` exercises ES256 + RS256 registration, authentication,
   and replay attack rejection entirely in software
 
+[0.8.0]: https://github.com/ivanxie/caden-rs/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/ivanxie/caden-rs/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/ivanxie/caden-rs/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/ivanxie/caden-rs/compare/v0.4.0...v0.5.0
