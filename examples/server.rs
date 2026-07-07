@@ -23,7 +23,7 @@ use tokio::sync::Mutex;
 
 use webauthn::{
     AuthenticatorAssertionResponse, AuthenticatorAttestationResponse, Challenge, Credential,
-    RelyingParty,
+    RegistrationOptions, RelyingParty, UserEntity,
 };
 
 // ─── App state ────────────────────────────────────────────────────────────────
@@ -46,32 +46,12 @@ struct RegisterBeginRequest {
     username: String,
 }
 
-#[derive(Serialize)]
-struct PubKeyCredParam {
-    r#type: &'static str,
-    alg: i64,
-}
-
-#[derive(Serialize)]
-struct RpInfo {
-    id: &'static str,
-    name: &'static str,
-}
-
-#[derive(Serialize)]
-struct UserInfo {
-    id: String,
-    name: String,
-}
-
+/// Response for POST /register/begin: session_id plus all W3C creation options.
 #[derive(Serialize)]
 struct RegisterBeginResponse {
     session_id: String,
-    challenge: String,
-    rp: RpInfo,
-    user: UserInfo,
-    #[serde(rename = "pubKeyCredParams")]
-    pub_key_cred_params: Vec<PubKeyCredParam>,
+    #[serde(flatten)]
+    options: RegistrationOptions,
 }
 
 #[derive(Deserialize)]
@@ -214,52 +194,33 @@ async fn register_begin(
     State(state): State<SharedState>,
     Json(req): Json<RegisterBeginRequest>,
 ) -> impl IntoResponse {
-    let challenge = match Challenge::new() {
-        Ok(c) => c,
-        Err(e) => return server_error(format!("challenge generation failed: {e}")).into_response(),
+    let user = UserEntity {
+        id: req.user_id.into_bytes(),
+        name: req.username.clone(),
+        display_name: req.username,
+    };
+
+    let options = match state.relying_party.begin_registration(user) {
+        Ok(o) => o,
+        Err(e) => return server_error(format!("begin_registration failed: {e}")).into_response(),
     };
 
     let session_id = new_session_id();
-    let challenge_b64 = URL_SAFE_NO_PAD.encode(&challenge.bytes);
 
     state
         .pending_challenges
         .lock()
         .await
-        .insert(session_id.clone(), challenge);
+        .insert(session_id.clone(), options.challenge.clone());
 
-    let response = RegisterBeginResponse {
-        session_id,
-        challenge: challenge_b64,
-        rp: RpInfo {
-            id: "localhost",
-            name: "Caden Demo",
-        },
-        user: UserInfo {
-            id: req.user_id,
-            name: req.username,
-        },
-        pub_key_cred_params: vec![
-            PubKeyCredParam {
-                r#type: "public-key",
-                alg: -7,
-            },
-            PubKeyCredParam {
-                r#type: "public-key",
-                alg: -8,
-            },
-            PubKeyCredParam {
-                r#type: "public-key",
-                alg: -35,
-            },
-            PubKeyCredParam {
-                r#type: "public-key",
-                alg: -257,
-            },
-        ],
-    };
-
-    (StatusCode::OK, Json(response)).into_response()
+    (
+        StatusCode::OK,
+        Json(RegisterBeginResponse {
+            session_id,
+            options,
+        }),
+    )
+        .into_response()
 }
 
 /// POST /register/complete — verify registration and store the credential.

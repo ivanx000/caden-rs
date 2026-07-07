@@ -24,6 +24,7 @@ use crate::credential::{
 };
 use crate::crypto::sha256;
 use crate::error::{Result, WebAuthnError};
+use crate::options::{AttestationPreference, RegistrationOptions, UserEntity};
 
 // ─── RelyingParty ─────────────────────────────────────────────────────────────
 
@@ -351,6 +352,57 @@ impl RelyingParty {
             None
         };
         self
+    }
+
+    /// Begin a registration ceremony by generating options for the browser.
+    ///
+    /// Returns a [`RegistrationOptions`] value ready to serialize and send to
+    /// the client as `PublicKeyCredentialCreationOptions`. Before responding,
+    /// persist `options.challenge` in your session store — you must pass it
+    /// to [`RelyingParty::verify_registration`] when the browser returns.
+    ///
+    /// `pub_key_cred_params` is populated from this RP's configured
+    /// [`RelyingParty::allowed_algorithms`]. If no algorithms are configured,
+    /// all four supported algorithms are included: ES256, ES384, EdDSA, RS256.
+    ///
+    /// # Arguments
+    /// * `user` — The account information to embed in the options.
+    ///
+    /// # Errors
+    /// Returns a [`WebAuthnError`] only if the system random number generator
+    /// fails to generate a challenge (extremely unlikely).
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use webauthn::{RelyingParty, UserEntity};
+    ///
+    /// let rp = RelyingParty::new("example.com", "https://example.com", "My Service");
+    /// let user = UserEntity {
+    ///     id: b"user-42".to_vec(),
+    ///     name: "alice@example.com".to_string(),
+    ///     display_name: "Alice".to_string(),
+    /// };
+    /// let opts = rp.begin_registration(user).expect("RNG failure");
+    /// // Persist opts.challenge, serialize opts to JSON, send to browser.
+    /// ```
+    pub fn begin_registration(&self, user: UserEntity) -> Result<RegistrationOptions> {
+        let challenge = Challenge::new()?;
+        let pub_key_cred_params = if self.allowed_algorithms.is_empty() {
+            vec![COSE_ES256, COSE_ES384, COSE_EDDSA, COSE_RS256]
+        } else {
+            self.allowed_algorithms.clone()
+        };
+        Ok(RegistrationOptions {
+            challenge,
+            rp_id: self.id.clone(),
+            rp_name: self.name.clone(),
+            user,
+            pub_key_cred_params,
+            timeout_ms: 300_000,
+            attestation: AttestationPreference::None,
+            authenticator_selection: None,
+        })
     }
 
     /// Verify a registration ceremony response (W3C WebAuthn §7.1).
@@ -710,5 +762,85 @@ mod tests {
             result,
             Err(WebAuthnError::InvalidAttestationObject(ref m)) if m.contains("bytes")
         ));
+    }
+
+    // ── begin_registration tests ─────────────────────────────────────────────
+
+    fn make_user() -> UserEntity {
+        UserEntity {
+            id: vec![1, 2, 3, 4],
+            name: "alice@example.com".to_string(),
+            display_name: "Alice".to_string(),
+        }
+    }
+
+    fn make_rp() -> RelyingParty {
+        RelyingParty::new("example.com", "https://example.com", "Test Service")
+    }
+
+    #[test]
+    fn begin_registration_challenge_is_32_bytes() {
+        let opts = make_rp()
+            .begin_registration(make_user())
+            .expect("begin_registration failed");
+        assert_eq!(opts.challenge.bytes.len(), 32);
+    }
+
+    #[test]
+    fn begin_registration_rp_fields_match() {
+        let opts = make_rp()
+            .begin_registration(make_user())
+            .expect("begin_registration failed");
+        assert_eq!(opts.rp_id, "example.com");
+        assert_eq!(opts.rp_name, "Test Service");
+    }
+
+    #[test]
+    fn begin_registration_includes_es256_by_default() {
+        let opts = make_rp()
+            .begin_registration(make_user())
+            .expect("begin_registration failed");
+        assert!(opts.pub_key_cred_params.contains(&COSE_ES256));
+    }
+
+    #[test]
+    fn begin_registration_respects_allowed_algorithms() {
+        let rp = make_rp().allowed_algorithms([COSE_ES256]);
+        let opts = rp
+            .begin_registration(make_user())
+            .expect("begin_registration failed");
+        assert_eq!(opts.pub_key_cred_params, vec![COSE_ES256]);
+    }
+
+    #[test]
+    fn begin_registration_json_shape() {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+        let opts = make_rp()
+            .begin_registration(make_user())
+            .expect("begin_registration failed");
+        let json = serde_json::to_value(&opts).expect("serialization failed");
+
+        // rp.id and rp.name
+        assert_eq!(json["rp"]["id"], "example.com");
+        assert_eq!(json["rp"]["name"], "Test Service");
+
+        // user.id encoded as base64url (no padding)
+        let expected_id = URL_SAFE_NO_PAD.encode(&[1u8, 2, 3, 4]);
+        assert_eq!(json["user"]["id"], expected_id);
+
+        // pubKeyCredParams[0] shape
+        assert_eq!(json["pubKeyCredParams"][0]["type"], "public-key");
+
+        // attestation defaults to "none"
+        assert_eq!(json["attestation"], "none");
+
+        // timeout defaults to 5 minutes
+        assert_eq!(json["timeout"], 300_000u32);
+
+        // authenticatorSelection is absent when None
+        assert!(
+            json.get("authenticatorSelection").is_none()
+                || json["authenticatorSelection"].is_null()
+        );
     }
 }
