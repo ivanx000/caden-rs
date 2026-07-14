@@ -18,6 +18,9 @@ use crate::crypto::{
     rsa_components_to_der, sha256, verify_eddsa, verify_es256, verify_es384, verify_rs256,
 };
 use crate::error::{Result, WebAuthnError};
+use crate::options::{
+    AuthenticationOptions, PublicKeyCredentialDescriptor, UserVerificationRequirement,
+};
 use crate::registration::RelyingParty;
 
 /// The browser's response after a `navigator.credentials.get()` call.
@@ -54,6 +57,68 @@ pub struct AuthenticatorAssertionResponse {
 }
 
 impl RelyingParty {
+    /// Begin an authentication ceremony by generating options for the browser.
+    ///
+    /// Returns an [`AuthenticationOptions`] value ready to serialize and send
+    /// to the client as `PublicKeyCredentialRequestOptions`. Before responding,
+    /// persist `options.challenge` in your session store — you must pass it to
+    /// [`RelyingParty::verify_authentication`] when the browser returns.
+    ///
+    /// Pass the stored credential ID(s) to restrict which credential the
+    /// browser presents. Pass an empty iterator for the passkey / discoverable
+    /// credential flow where the authenticator picks any matching credential.
+    ///
+    /// # Arguments
+    /// * `allow_credentials` — Credential IDs to restrict the assertion to.
+    ///   An empty iterator produces an empty `allowCredentials` array, signaling
+    ///   the passkey / discoverable credential flow to the browser.
+    ///
+    /// # Errors
+    /// Returns a [`WebAuthnError`] only if the system random number generator
+    /// fails to generate a challenge (extremely unlikely).
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use webauthn::RelyingParty;
+    ///
+    /// let rp = RelyingParty::new("example.com", "https://example.com", "My Service");
+    ///
+    /// // Non-discoverable flow: hint at a specific credential.
+    /// let cred_id: Vec<u8> = vec![ /* bytes from DB */ ];
+    /// let opts = rp.authentication_options([cred_id.as_slice()]).expect("RNG failure");
+    /// // Persist opts.challenge, serialize opts to JSON, send to browser.
+    ///
+    /// // Passkey / discoverable flow: empty allowCredentials.
+    /// let passkey_opts = rp.authentication_options(std::iter::empty::<Vec<u8>>())
+    ///     .expect("RNG failure");
+    /// ```
+    pub fn authentication_options(
+        &self,
+        allow_credentials: impl IntoIterator<Item = impl AsRef<[u8]>>,
+    ) -> Result<AuthenticationOptions> {
+        let challenge = Challenge::new()?;
+        let user_verification = if self.require_user_verification {
+            UserVerificationRequirement::Required
+        } else {
+            UserVerificationRequirement::Preferred
+        };
+        let allow_credentials = allow_credentials
+            .into_iter()
+            .map(|id| PublicKeyCredentialDescriptor {
+                id: id.as_ref().to_vec(),
+                transports: None,
+            })
+            .collect();
+        Ok(AuthenticationOptions {
+            challenge,
+            timeout_ms: 300_000,
+            rp_id: self.id.clone(),
+            allow_credentials,
+            user_verification,
+        })
+    }
+
     /// Extract the credential ID and user handle from a passkey assertion response.
     ///
     /// In the discoverable credential (passkey) flow, the browser sends
@@ -280,4 +345,98 @@ fn verify_authentication_inner(
         backup_state: auth_data.flags.backup_state,
         extensions: auth_data.extensions,
     })
+}
+
+// ─── Tests ────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_rp() -> RelyingParty {
+        RelyingParty::new("example.com", "https://example.com", "Test Service")
+    }
+
+    #[test]
+    fn authentication_options_challenge_is_32_bytes() {
+        let opts = make_rp()
+            .authentication_options(std::iter::empty::<Vec<u8>>())
+            .expect("authentication_options failed");
+        assert_eq!(opts.challenge.bytes.len(), 32);
+    }
+
+    #[test]
+    fn authentication_options_rp_id_matches() {
+        let opts = make_rp()
+            .authentication_options(std::iter::empty::<Vec<u8>>())
+            .expect("authentication_options failed");
+        assert_eq!(opts.rp_id, "example.com");
+    }
+
+    #[test]
+    fn authentication_options_allow_credentials_round_trips() {
+        let cred_id = vec![1u8, 2, 3, 4];
+        let opts = make_rp()
+            .authentication_options(std::iter::once(cred_id.as_slice()))
+            .expect("authentication_options failed");
+        assert_eq!(opts.allow_credentials.len(), 1);
+        assert_eq!(opts.allow_credentials[0].id, cred_id);
+        assert!(opts.allow_credentials[0].transports.is_none());
+    }
+
+    #[test]
+    fn authentication_options_json_shape() {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+        let cred_id = vec![1u8, 2, 3, 4];
+        let opts = make_rp()
+            .authentication_options(std::iter::once(cred_id.as_slice()))
+            .expect("authentication_options failed");
+        let json = serde_json::to_value(&opts).expect("serialization failed");
+
+        // "challenge" is a valid base64url string (no padding)
+        let challenge_str = json["challenge"]
+            .as_str()
+            .expect("challenge must be a string");
+        URL_SAFE_NO_PAD
+            .decode(challenge_str)
+            .expect("challenge must be valid base64url");
+
+        // "timeout" defaults to 5 minutes
+        assert_eq!(json["timeout"], 300_000u32);
+
+        // "rpId"
+        assert_eq!(json["rpId"], "example.com");
+
+        // "allowCredentials[0]" has the right shape
+        assert_eq!(json["allowCredentials"][0]["type"], "public-key");
+        let id_str = json["allowCredentials"][0]["id"]
+            .as_str()
+            .expect("id must be a string");
+        let decoded = URL_SAFE_NO_PAD
+            .decode(id_str)
+            .expect("id must be valid base64url");
+        assert_eq!(decoded, cred_id);
+
+        // "userVerification" defaults to "preferred"
+        assert_eq!(json["userVerification"], "preferred");
+    }
+
+    #[test]
+    fn authentication_options_empty_allow_credentials_serializes_to_empty_array() {
+        let opts = make_rp()
+            .authentication_options(std::iter::empty::<Vec<u8>>())
+            .expect("authentication_options failed");
+        let json = serde_json::to_value(&opts).expect("serialization failed");
+        assert_eq!(json["allowCredentials"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn authentication_options_uv_required_when_configured() {
+        let rp = make_rp().require_user_verification(true);
+        let opts = rp
+            .authentication_options(std::iter::empty::<Vec<u8>>())
+            .expect("authentication_options failed");
+        let json = serde_json::to_value(&opts).expect("serialization failed");
+        assert_eq!(json["userVerification"], "required");
+    }
 }
