@@ -143,7 +143,8 @@ pub use crypto::{generate_challenge, random_bytes, rsa_components_to_der, sha256
 pub use error::{Result, WebAuthnError};
 pub use extensions::{CredProps, ExtensionView, PrfExtension, PrfValues};
 pub use options::{
-    AttestationPreference, AuthenticatorAttachment, AuthenticatorSelection, RegistrationOptions,
+    AttestationPreference, AuthenticationOptions, AuthenticatorAttachment, AuthenticatorSelection,
+    AuthenticatorTransport, PublicKeyCredentialDescriptor, RegistrationOptions,
     ResidentKeyRequirement, UserEntity, UserVerificationRequirement,
 };
 pub use registration::RelyingParty;

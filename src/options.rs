@@ -1,9 +1,10 @@
 //! Options types for WebAuthn registration and authentication ceremonies.
 //!
-//! These types represent `PublicKeyCredentialCreationOptions`, the JSON object
-//! sent to the browser before `navigator.credentials.create()`. Construct them
-//! via [`crate::RelyingParty::begin_registration`] and serialize directly with
-//! `serde_json::to_string`.
+//! These types represent the JSON objects sent to the browser before
+//! `navigator.credentials.create()` and `navigator.credentials.get()`.
+//! Construct them via [`crate::RelyingParty::begin_registration`] and
+//! [`crate::RelyingParty::authentication_options`] and serialize directly
+//! with `serde_json::to_string`.
 //!
 //! Spec: <https://www.w3.org/TR/webauthn-3/#dictionary-makecredentialoptions>
 
@@ -204,6 +205,155 @@ pub struct RegistrationOptions {
 
     /// Optional criteria for selecting an authenticator.
     pub authenticator_selection: Option<AuthenticatorSelection>,
+}
+
+// ─── AuthenticatorTransport ───────────────────────────────────────────────────
+
+/// Transport channels a credential may use to communicate with the client.
+///
+/// Used in [`PublicKeyCredentialDescriptor::transports`] to hint to the
+/// browser which transports a credential was registered with, allowing the
+/// platform to present a more targeted authenticator picker.
+///
+/// Spec: <https://www.w3.org/TR/webauthn-3/#enumdef-authenticatortransport>
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AuthenticatorTransport {
+    /// USB connection (e.g. a YubiKey plugged into a USB port).
+    Usb,
+    /// Near-field communication (e.g. tap-to-authenticate security keys).
+    Nfc,
+    /// Bluetooth Low Energy.
+    Ble,
+    /// Built-in platform authenticator (Touch ID, Windows Hello, etc.).
+    Internal,
+    /// Cross-device authentication via a phone or tablet (FIDO2 hybrid transport).
+    Hybrid,
+}
+
+// ─── PublicKeyCredentialDescriptor ───────────────────────────────────────────
+
+/// A reference to a previously registered credential.
+///
+/// Placed in `allowCredentials` when constructing [`AuthenticationOptions`].
+/// An empty `allowCredentials` list signals the passkey / discoverable
+/// credential flow — the browser prompts the user to pick any matching
+/// credential rather than restricting to a specific one.
+///
+/// Spec: <https://www.w3.org/TR/webauthn-3/#dictdef-publickeycredentialdescriptor>
+#[derive(Debug, Clone)]
+pub struct PublicKeyCredentialDescriptor {
+    /// Raw credential ID bytes, as stored in your database.
+    pub id: Vec<u8>,
+
+    /// Optional transport hints for the credential.
+    ///
+    /// When `None`, no transport hint is sent and the platform uses all
+    /// available transports. Only set this if you recorded the transports
+    /// during registration (available via the authenticator extensions).
+    pub transports: Option<Vec<AuthenticatorTransport>>,
+}
+
+// ─── AuthenticationOptions ────────────────────────────────────────────────────
+
+/// Options for an authentication ceremony, serialized as
+/// `PublicKeyCredentialRequestOptions` and sent to the browser.
+///
+/// Construct via [`crate::RelyingParty::authentication_options`]. Before
+/// responding to the client, persist `challenge` in your session store —
+/// you will need it when the browser sends the assertion response.
+///
+/// ```rust,no_run
+/// use webauthn::RelyingParty;
+///
+/// let rp = RelyingParty::new("example.com", "https://example.com", "My Service");
+/// // Non-discoverable flow: pass the credential ID to restrict which credential
+/// // the browser shows.
+/// let stored_cred_id: Vec<u8> = vec![ /* bytes from DB */ ];
+/// let opts = rp.authentication_options([stored_cred_id.as_slice()])
+///     .expect("challenge generation failed");
+/// // Persist opts.challenge, then serialize opts to JSON and send to browser.
+/// let json = serde_json::to_string(&opts).expect("serialization failed");
+/// ```
+///
+/// Spec: <https://www.w3.org/TR/webauthn-3/#dictionary-assertion-options>
+#[derive(Debug, Clone)]
+pub struct AuthenticationOptions {
+    /// The challenge issued for this ceremony.
+    ///
+    /// Persist this before responding — you must pass it to
+    /// [`crate::RelyingParty::verify_authentication`] when the browser returns.
+    pub challenge: Challenge,
+
+    /// How long (in milliseconds) the client may wait before timing out.
+    ///
+    /// Defaults to `300_000` (5 minutes). Serialized as `"timeout"`.
+    pub timeout_ms: u32,
+
+    /// The relying party ID. Must match the `rpId` used at registration.
+    ///
+    /// Serialized as `"rpId"`.
+    pub rp_id: String,
+
+    /// Credentials the authenticator may use for this assertion.
+    ///
+    /// An empty list (the default for the passkey flow) lets the authenticator
+    /// choose any discoverable credential matching this RP. Serialized as
+    /// `"allowCredentials"`.
+    pub allow_credentials: Vec<PublicKeyCredentialDescriptor>,
+
+    /// Whether the authenticator must verify the user's identity.
+    ///
+    /// Set from [`crate::RelyingParty::require_user_verification`]:
+    /// `Required` when `true`, `Preferred` otherwise. Serialized as
+    /// `"userVerification"`.
+    pub user_verification: UserVerificationRequirement,
+}
+
+// ─── W3C-compliant Serialize impl for AuthenticationOptions ──────────────────
+
+// Private: one entry in "allowCredentials".
+struct CredentialDescriptorSer<'a>(&'a PublicKeyCredentialDescriptor);
+
+impl serde::Serialize for CredentialDescriptorSer<'_> {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        let size = if self.0.transports.is_some() { 3 } else { 2 };
+        let mut map = s.serialize_map(Some(size))?;
+        map.serialize_entry("type", "public-key")?;
+        map.serialize_entry("id", &URL_SAFE_NO_PAD.encode(&self.0.id))?;
+        if let Some(ref transports) = self.0.transports {
+            map.serialize_entry("transports", transports)?;
+        }
+        map.end()
+    }
+}
+
+impl serde::Serialize for AuthenticationOptions {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut map = serializer.serialize_map(Some(5))?;
+
+        // "challenge": "<base64url, no padding>"
+        map.serialize_entry("challenge", &URL_SAFE_NO_PAD.encode(&self.challenge.bytes))?;
+
+        // "timeout": <milliseconds>
+        map.serialize_entry("timeout", &self.timeout_ms)?;
+
+        // "rpId": "example.com"
+        map.serialize_entry("rpId", &self.rp_id)?;
+
+        // "allowCredentials": [{"type": "public-key", "id": "<base64url>"}, ...]
+        let descriptors: Vec<CredentialDescriptorSer> = self
+            .allow_credentials
+            .iter()
+            .map(CredentialDescriptorSer)
+            .collect();
+        map.serialize_entry("allowCredentials", &descriptors)?;
+
+        // "userVerification": "required" | "preferred" | "discouraged"
+        map.serialize_entry("userVerification", &self.user_verification)?;
+
+        map.end()
+    }
 }
 
 // ─── W3C-compliant Serialize impl for RegistrationOptions ────────────────────
