@@ -9,6 +9,40 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [0.9.0] — 2026-07-14
+
+### Added
+
+- **`RegistrationOptions::exclude_credentials`** — new field on [`RegistrationOptions`]
+  populated from a new `exclude_credentials` parameter on
+  [`RelyingParty::begin_registration`]. Pass the credential IDs already
+  registered for the user; the browser instructs the authenticator to refuse
+  re-registering any matching credential. Serialized as `"excludeCredentials"`
+  (same shape as `"allowCredentials"`). An empty iterator produces an empty
+  array — the browser treats this as no restriction, matching the previous
+  behaviour. **Breaking change**: `begin_registration` now requires a second
+  argument; existing callers must add `std::iter::empty::<Vec<u8>>()` (or the
+  real credential list) to compile.
+
+- **`RelyingParty::default_authenticator_selection`** — new builder method that
+  sets a default [`AuthenticatorSelection`] value. When set, the value is
+  copied into every [`RegistrationOptions`] produced by `begin_registration`.
+  When `None` (the default), the `"authenticatorSelection"` field is omitted
+  from the serialized JSON as before. The corresponding
+  `default_authenticator_selection` field on `RelyingParty` is `pub`.
+
+- **`RelyingParty::authentication_options`** — new method that builds and returns
+  an [`AuthenticationOptions`] value ready to serialize and send to the browser
+  as `PublicKeyCredentialRequestOptions`. Accepts an iterator of raw credential
+  ID bytes for the `allowCredentials` list; an empty iterator produces the
+  discoverable-credential (passkey) flow where the authenticator picks any
+  matching credential. New supporting types added to `src/options.rs`:
+  [`AuthenticationOptions`], [`PublicKeyCredentialDescriptor`],
+  [`AuthenticatorTransport`]. All W3C JSON keys use camelCase and IDs are
+  base64url-encoded with no padding.
+
+---
+
 ## [0.8.0] — 2026-07-05
 
 ### Added
