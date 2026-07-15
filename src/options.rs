@@ -165,7 +165,11 @@ pub struct AuthenticatorSelection {
 ///     name: "alice@example.com".to_string(),
 ///     display_name: "Alice".to_string(),
 /// };
-/// let opts = rp.begin_registration(user).expect("challenge generation failed");
+/// // Pass the credential IDs already registered for this user so the browser
+/// // can tell the authenticator to skip re-registering them.
+/// let existing: Vec<Vec<u8>> = vec![/* credential IDs from DB */];
+/// let opts = rp.begin_registration(user, existing.iter().map(|v| v.as_slice()))
+///     .expect("challenge generation failed");
 /// // Persist opts.challenge, then serialize opts to JSON and send to browser.
 /// let json = serde_json::to_string(&opts).expect("serialization failed");
 /// ```
@@ -202,6 +206,16 @@ pub struct RegistrationOptions {
 
     /// The RP's preference for attestation. Defaults to `AttestationPreference::None`.
     pub attestation: AttestationPreference,
+
+    /// Credentials to exclude from this registration.
+    ///
+    /// The authenticator will refuse to create a new credential if one of the
+    /// listed IDs is already stored on it, preventing duplicate registrations.
+    /// An empty list (the default) places no restriction.
+    ///
+    /// Serialized as `"excludeCredentials"`:
+    /// `[{"type": "public-key", "id": "<base64url>"}, ...]`.
+    pub exclude_credentials: Vec<PublicKeyCredentialDescriptor>,
 
     /// Optional criteria for selecting an authenticator.
     pub authenticator_selection: Option<AuthenticatorSelection>,
@@ -388,10 +402,10 @@ impl serde::Serialize for UserEntitySer<'_> {
 
 impl serde::Serialize for RegistrationOptions {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let field_count = if self.authenticator_selection.is_some() {
-            7
+        let field_count = 7 + if self.authenticator_selection.is_some() {
+            1
         } else {
-            6
+            0
         };
         let mut map = serializer.serialize_map(Some(field_count))?;
 
@@ -423,6 +437,14 @@ impl serde::Serialize for RegistrationOptions {
 
         // "timeout": <milliseconds>
         map.serialize_entry("timeout", &self.timeout_ms)?;
+
+        // "excludeCredentials": [{"type": "public-key", "id": "<base64url>"}, ...]
+        let excluded: Vec<CredentialDescriptorSer> = self
+            .exclude_credentials
+            .iter()
+            .map(CredentialDescriptorSer)
+            .collect();
+        map.serialize_entry("excludeCredentials", &excluded)?;
 
         // "attestation": "none" | "indirect" | "direct"
         map.serialize_entry("attestation", &self.attestation)?;

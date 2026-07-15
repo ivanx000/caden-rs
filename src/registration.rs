@@ -24,7 +24,10 @@ use crate::credential::{
 };
 use crate::crypto::sha256;
 use crate::error::{Result, WebAuthnError};
-use crate::options::{AttestationPreference, RegistrationOptions, UserEntity};
+use crate::options::{
+    AttestationPreference, AuthenticatorSelection, PublicKeyCredentialDescriptor,
+    RegistrationOptions, UserEntity,
+};
 
 // ─── RelyingParty ─────────────────────────────────────────────────────────────
 
@@ -141,6 +144,14 @@ pub struct RelyingParty {
     /// an `Arc<RelyingParty>` in an async web handler) enforce the policy
     /// collectively rather than independently.
     pub used_challenges: Option<Arc<Mutex<HashSet<Vec<u8>>>>>,
+
+    /// Default authenticator selection criteria copied into every
+    /// [`RegistrationOptions`] produced by [`RelyingParty::begin_registration`].
+    ///
+    /// `None` (the default) omits the `authenticatorSelection` field from the
+    /// JSON sent to the browser. Set via
+    /// [`RelyingParty::default_authenticator_selection`].
+    pub default_authenticator_selection: Option<AuthenticatorSelection>,
 }
 
 impl RelyingParty {
@@ -162,6 +173,7 @@ impl RelyingParty {
             reject_backup_eligible: false,
             trust_anchors: vec![],
             used_challenges: None,
+            default_authenticator_selection: None,
         }
     }
 
@@ -192,6 +204,7 @@ impl RelyingParty {
             reject_backup_eligible: false,
             trust_anchors: vec![],
             used_challenges: None,
+            default_authenticator_selection: None,
         }
     }
 
@@ -354,6 +367,34 @@ impl RelyingParty {
         self
     }
 
+    /// Set the default `authenticatorSelection` criteria for every registration.
+    ///
+    /// When set, the value is copied into every [`RegistrationOptions`] returned
+    /// by [`RelyingParty::begin_registration`]. When `None` (the default), the
+    /// `authenticatorSelection` field is omitted from the JSON sent to the
+    /// browser, which lets the browser choose any available authenticator.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use webauthn::{
+    ///     RelyingParty,
+    ///     AuthenticatorSelection, ResidentKeyRequirement, UserVerificationRequirement,
+    /// };
+    ///
+    /// let rp = RelyingParty::new("example.com", "https://example.com", "My Service")
+    ///     .default_authenticator_selection(AuthenticatorSelection {
+    ///         authenticator_attachment: None,
+    ///         resident_key: Some(ResidentKeyRequirement::Required),
+    ///         require_resident_key: false,
+    ///         user_verification: UserVerificationRequirement::Required,
+    ///     });
+    /// ```
+    pub fn default_authenticator_selection(mut self, sel: AuthenticatorSelection) -> Self {
+        self.default_authenticator_selection = Some(sel);
+        self
+    }
+
     /// Begin a registration ceremony by generating options for the browser.
     ///
     /// Returns a [`RegistrationOptions`] value ready to serialize and send to
@@ -367,6 +408,10 @@ impl RelyingParty {
     ///
     /// # Arguments
     /// * `user` — The account information to embed in the options.
+    /// * `exclude_credentials` — Iterator of raw credential ID bytes already
+    ///   registered for this user. The browser will instruct the authenticator
+    ///   to refuse re-registering any credential whose ID is in this list.
+    ///   Pass an empty iterator when no credentials exist yet.
     ///
     /// # Errors
     /// Returns a [`WebAuthnError`] only if the system random number generator
@@ -383,16 +428,31 @@ impl RelyingParty {
     ///     name: "alice@example.com".to_string(),
     ///     display_name: "Alice".to_string(),
     /// };
-    /// let opts = rp.begin_registration(user).expect("RNG failure");
+    /// // Pass existing credential IDs to prevent the authenticator from
+    /// // re-registering an already-stored credential.
+    /// let existing_ids: Vec<Vec<u8>> = vec![/* from DB */];
+    /// let opts = rp.begin_registration(user, existing_ids.iter().map(|v| v.as_slice()))
+    ///     .expect("RNG failure");
     /// // Persist opts.challenge, serialize opts to JSON, send to browser.
     /// ```
-    pub fn begin_registration(&self, user: UserEntity) -> Result<RegistrationOptions> {
+    pub fn begin_registration(
+        &self,
+        user: UserEntity,
+        exclude_credentials: impl IntoIterator<Item = impl AsRef<[u8]>>,
+    ) -> Result<RegistrationOptions> {
         let challenge = Challenge::new()?;
         let pub_key_cred_params = if self.allowed_algorithms.is_empty() {
             vec![COSE_ES256, COSE_ES384, COSE_EDDSA, COSE_RS256]
         } else {
             self.allowed_algorithms.clone()
         };
+        let exclude_credentials: Vec<PublicKeyCredentialDescriptor> = exclude_credentials
+            .into_iter()
+            .map(|id| PublicKeyCredentialDescriptor {
+                id: id.as_ref().to_vec(),
+                transports: None,
+            })
+            .collect();
         Ok(RegistrationOptions {
             challenge,
             rp_id: self.id.clone(),
@@ -401,7 +461,8 @@ impl RelyingParty {
             pub_key_cred_params,
             timeout_ms: 300_000,
             attestation: AttestationPreference::None,
-            authenticator_selection: None,
+            exclude_credentials,
+            authenticator_selection: self.default_authenticator_selection.clone(),
         })
     }
 
@@ -781,7 +842,7 @@ mod tests {
     #[test]
     fn begin_registration_challenge_is_32_bytes() {
         let opts = make_rp()
-            .begin_registration(make_user())
+            .begin_registration(make_user(), std::iter::empty::<Vec<u8>>())
             .expect("begin_registration failed");
         assert_eq!(opts.challenge.bytes.len(), 32);
     }
@@ -789,7 +850,7 @@ mod tests {
     #[test]
     fn begin_registration_rp_fields_match() {
         let opts = make_rp()
-            .begin_registration(make_user())
+            .begin_registration(make_user(), std::iter::empty::<Vec<u8>>())
             .expect("begin_registration failed");
         assert_eq!(opts.rp_id, "example.com");
         assert_eq!(opts.rp_name, "Test Service");
@@ -798,7 +859,7 @@ mod tests {
     #[test]
     fn begin_registration_includes_es256_by_default() {
         let opts = make_rp()
-            .begin_registration(make_user())
+            .begin_registration(make_user(), std::iter::empty::<Vec<u8>>())
             .expect("begin_registration failed");
         assert!(opts.pub_key_cred_params.contains(&COSE_ES256));
     }
@@ -807,7 +868,7 @@ mod tests {
     fn begin_registration_respects_allowed_algorithms() {
         let rp = make_rp().allowed_algorithms([COSE_ES256]);
         let opts = rp
-            .begin_registration(make_user())
+            .begin_registration(make_user(), std::iter::empty::<Vec<u8>>())
             .expect("begin_registration failed");
         assert_eq!(opts.pub_key_cred_params, vec![COSE_ES256]);
     }
@@ -816,7 +877,7 @@ mod tests {
     fn begin_registration_json_shape() {
         use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
         let opts = make_rp()
-            .begin_registration(make_user())
+            .begin_registration(make_user(), std::iter::empty::<Vec<u8>>())
             .expect("begin_registration failed");
         let json = serde_json::to_value(&opts).expect("serialization failed");
 

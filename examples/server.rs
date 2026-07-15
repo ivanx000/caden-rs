@@ -183,7 +183,10 @@ async fn register_begin(
         display_name: req.username,
     };
 
-    let options = match state.relying_party.begin_registration(user) {
+    let options = match state
+        .relying_party
+        .begin_registration(user, std::iter::empty::<Vec<u8>>())
+    {
         Ok(o) => o,
         Err(e) => return server_error(format!("begin_registration failed: {e}")).into_response(),
     };
