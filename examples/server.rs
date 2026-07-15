@@ -22,8 +22,8 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
 use webauthn::{
-    AuthenticatorAssertionResponse, AuthenticatorAttestationResponse, Challenge, Credential,
-    RegistrationOptions, RelyingParty, UserEntity,
+    AuthenticationOptions, AuthenticatorAssertionResponse, AuthenticatorAttestationResponse,
+    Challenge, Credential, RegistrationOptions, RelyingParty, UserEntity,
 };
 
 // ─── App state ────────────────────────────────────────────────────────────────
@@ -72,18 +72,12 @@ struct AuthBeginRequest {
     credential_id: String,
 }
 
-#[derive(Serialize)]
-struct AllowCredential {
-    r#type: &'static str,
-    id: String,
-}
-
+/// Response for POST /authenticate/begin and POST /passkey/authenticate/begin.
 #[derive(Serialize)]
 struct AuthBeginResponse {
     session_id: String,
-    challenge: String,
-    #[serde(rename = "allowCredentials")]
-    allow_credentials: Vec<AllowCredential>,
+    #[serde(flatten)]
+    options: AuthenticationOptions,
 }
 
 #[derive(Deserialize)]
@@ -99,17 +93,6 @@ struct AuthCompleteRequest {
 struct AuthCompleteResponse {
     status: &'static str,
     new_sign_count: u32,
-}
-
-/// POST /passkey/authenticate/begin — issue a challenge with no allowCredentials hint.
-///
-/// In the discoverable credential (passkey) flow, the server does not know
-/// which credential the user will choose. The authenticator picks one and
-/// returns the credential ID in `rawId` alongside the assertion.
-#[derive(Serialize)]
-struct PasskeyAuthBeginResponse {
-    session_id: String,
-    challenge: String,
 }
 
 /// POST /passkey/authenticate/complete — verify a discoverable credential assertion.
@@ -304,30 +287,31 @@ async fn authenticate_begin(
         }
     }
 
-    let challenge = match Challenge::new() {
-        Ok(c) => c,
-        Err(e) => return server_error(format!("challenge generation failed: {e}")).into_response(),
+    let options = match state
+        .relying_party
+        .authentication_options(std::iter::once(cred_id_bytes.as_slice()))
+    {
+        Ok(o) => o,
+        Err(e) => {
+            return server_error(format!("authentication_options failed: {e}")).into_response()
+        }
     };
 
     let session_id = new_session_id();
-    let challenge_b64 = URL_SAFE_NO_PAD.encode(&challenge.bytes);
-
     state
         .pending_challenges
         .lock()
         .await
-        .insert(session_id.clone(), challenge);
+        .insert(session_id.clone(), options.challenge.clone());
 
-    let response = AuthBeginResponse {
-        session_id,
-        challenge: challenge_b64,
-        allow_credentials: vec![AllowCredential {
-            r#type: "public-key",
-            id: req.credential_id,
-        }],
-    };
-
-    (StatusCode::OK, Json(response)).into_response()
+    (
+        StatusCode::OK,
+        Json(AuthBeginResponse {
+            session_id,
+            options,
+        }),
+    )
+        .into_response()
 }
 
 /// POST /authenticate/complete — verify authentication and update sign count.
@@ -415,28 +399,32 @@ async fn authenticate_complete(
 
 /// POST /passkey/authenticate/begin — issue a challenge with no allowCredentials hint.
 ///
-/// The authenticator will present the user with credentials matching the RP ID
-/// and return the chosen credential's ID as `rawId` in the assertion.
+/// An empty `allowCredentials` list signals the discoverable credential
+/// (passkey) flow — the authenticator presents the user with all matching
+/// credentials for this RP and returns the chosen ID as `rawId`.
 async fn passkey_authenticate_begin(State(state): State<SharedState>) -> impl IntoResponse {
-    let challenge = match Challenge::new() {
-        Ok(c) => c,
-        Err(e) => return server_error(format!("challenge generation failed: {e}")).into_response(),
+    let options = match state
+        .relying_party
+        .authentication_options(std::iter::empty::<Vec<u8>>())
+    {
+        Ok(o) => o,
+        Err(e) => {
+            return server_error(format!("authentication_options failed: {e}")).into_response()
+        }
     };
 
     let session_id = new_session_id();
-    let challenge_b64 = URL_SAFE_NO_PAD.encode(&challenge.bytes);
-
     state
         .pending_challenges
         .lock()
         .await
-        .insert(session_id.clone(), challenge);
+        .insert(session_id.clone(), options.challenge.clone());
 
     (
         StatusCode::OK,
-        Json(PasskeyAuthBeginResponse {
+        Json(AuthBeginResponse {
             session_id,
-            challenge: challenge_b64,
+            options,
         }),
     )
         .into_response()
