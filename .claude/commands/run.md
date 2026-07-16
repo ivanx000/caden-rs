@@ -44,7 +44,20 @@ Note the test count (e.g. `N passed, 0 failed`) and any ignored tests.
 
 ## Phase 4 — HTTP server walkthrough
 
-**4a. Start the server in the background.**
+**4a. Discover routes from source.**
+
+Read `examples/server.rs` and extract every `.route(...)` call from the `Router::new()` chain to build the authoritative `(METHOD, path)` list. Do not rely on any hardcoded list of endpoints — test exactly what the code currently exposes.
+
+For each route, classify it by method and path shape to decide how to probe it:
+
+| Route shape | How to test |
+|-------------|-------------|
+| `GET` any path | Plain curl; expect 200 with a JSON body. |
+| `POST` path ending in `/begin`, no credential hint needed (e.g. `/passkey/authenticate/begin`) | Send `{}` or the minimal body the handler requires; expect 200 with `session_id` + `challenge`. |
+| `POST` path ending in `/begin`, requires a field (e.g. `/register/begin`, `/authenticate/begin`) | Send a minimal valid body (e.g. `{"user_id":"u1","username":"alice"}` or `{"credential_id":"AAAA"}`); expect 200 or a typed error code. |
+| `POST` path ending in `/complete` | Send a payload with `"session_id":"BOGUS"` and dummy base64url values for any other required fields; the server must reject it with a known error code (e.g. `SESSION_NOT_FOUND`) *before* touching any crypto — this confirms the session-management pipeline. |
+
+**4b. Start the server in the background.**
 
 Use `run_in_background=true` for the Bash tool:
 
@@ -52,56 +65,18 @@ Use `run_in_background=true` for the Bash tool:
 cargo run --example server
 ```
 
-**4b. Wait for the server to be ready** (binary is pre-built so startup is fast):
+**4c. Wait for the server to be ready** (binary is pre-built so startup is fast):
 
 ```bash
 sleep 2
 ```
 
-**4c. Walk through each endpoint as a new user would.**
+**4d. Exercise every discovered route.**
 
-**Health check — is the server alive?**
-```bash
-curl -s http://localhost:3000/health | python3 -m json.tool
-```
-Expected: `{"status":"ok","version":"..."}`.
+For each `(METHOD, path)` from step 4a, send the appropriate curl request (as determined by the classification table above), print the response, and record ✅ (got the expected response or error code) or ❌ (unexpected failure or wrong HTTP status).
 
-**Registration begin — start registering a new user "alice"**
-```bash
-curl -s -X POST http://localhost:3000/register/begin \
-  -H 'Content-Type: application/json' \
-  -d '{"user_id":"user-alice","username":"alice"}' | python3 -m json.tool
-```
-Note: the response includes a random base64url `challenge`, `rp.id = "localhost"`, `user.name = "alice"`, and the list of allowed public-key algorithms.
+**4e. Stop the server.**
 
-**Registration complete — bad session (exercises the error pipeline)**
-```bash
-curl -s -X POST http://localhost:3000/register/complete \
-  -H 'Content-Type: application/json' \
-  -d '{"session_id":"BOGUS","client_data_json":"aGVsbG8","attestation_object":"aGVsbG8"}' \
-  | python3 -m json.tool
-```
-Expected: `{"error":"...","code":"SESSION_NOT_FOUND"}`. The server correctly rejects a non-existent session before touching any crypto.
-
-**Authentication begin — unknown credential (exercises credential lookup)**
-```bash
-curl -s -X POST http://localhost:3000/authenticate/begin \
-  -H 'Content-Type: application/json' \
-  -d '{"credential_id":"AAAA"}' | python3 -m json.tool
-```
-Expected: `{"code":"CREDENTIAL_NOT_FOUND",...}`.
-
-**Passkey / discoverable-credential flow — begin with no credential hint**
-```bash
-curl -s -X POST http://localhost:3000/passkey/authenticate/begin \
-  -H 'Content-Type: application/json' \
-  -d '{}' | python3 -m json.tool
-```
-Expected: JSON with a non-empty `session_id` and `"allowCredentials":[]`. The empty list is the W3C signal for the passkey flow — the browser shows the user all matching credentials rather than requiring the server to specify one.
-
-**4d. Stop the server.**
-
-Find and kill the background server process:
 ```bash
 pkill -f 'target/debug/examples/server' 2>/dev/null || true
 ```
@@ -110,18 +85,15 @@ pkill -f 'target/debug/examples/server' 2>/dev/null || true
 
 ## Phase 5 — Summary
 
-Print a final summary table. Mark each step ✅ or ❌:
+Print a final summary table. The server rows are generated from the route list discovered in step 4a — one row per route. Mark each step ✅ or ❌:
 
 ```
 === Caden /run walkthrough ===
 ✅ build
-✅ demo  (ES256 · RS256 · ES384 · EdDSA — registration + auth + replay rejection)
+✅ demo  (<algorithms from demo.rs> — registration + auth + replay rejection)
 ✅ tests (N passed, 0 failed)
-✅ server  GET  /health
-✅ server  POST /register/begin
-✅ server  POST /register/complete   (SESSION_NOT_FOUND error path)
-✅ server  POST /authenticate/begin  (CREDENTIAL_NOT_FOUND error path)
-✅ server  POST /passkey/authenticate/begin
+✅ server  <METHOD>  <path>   (<what was verified>)
+  ... one row per discovered route ...
 ==============================
 All checks passed.
 ```
