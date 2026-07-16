@@ -44,6 +44,8 @@ worthless without private keys), and password reuse (each site gets a unique key
 | EdDSA / Ed25519 (COSE -8) | ✅ Implemented |
 | RS256 (RSA PKCS#1 v1.5 + SHA-256, COSE -257) | ✅ Implemented |
 | Multiple allowed origins (`RelyingParty::with_origins`) | ✅ Implemented |
+| Registration options builder (`begin_registration` / `RegistrationOptions`) | ✅ Implemented — serializes to W3C `PublicKeyCredentialCreationOptions`; includes `excludeCredentials` |
+| Authentication options builder (`authentication_options` / `AuthenticationOptions`) | ✅ Implemented — serializes to W3C `PublicKeyCredentialRequestOptions`; empty allow-list = passkey (discoverable) flow |
 | `"none"` attestation format | ✅ Implemented |
 | Packed self-attestation (no x5c) | ✅ Implemented — signature fully verified |
 | Packed basic attestation (x5c present) | ✅ Implemented — signature + x5c chain order verified; optional trust-anchor pinning via `trust_anchors()` |
@@ -53,6 +55,10 @@ worthless without private keys), and password reuse (each site gets a unique key
 | TPM attestation (`"tpm"`) | ✅ Implemented — certInfo + pubArea + x5c chain order verified; cert chain requires FIDO MDS for full provenance |
 | UV flag enforcement (`require_user_verification`) | ✅ Implemented — opt-in via builder; off by default |
 | Algorithm allowlist (`allowed_algorithms`) | ✅ Implemented — opt-in via builder; empty = accept all |
+| Backup eligibility / state tracking (BE/BS flags, §6.1) | ✅ Implemented — `backup_eligible` and `backup_state` on `Credential`, `RegistrationResult`, `AuthenticationResult`; BE immutability enforced at authentication |
+| Backup eligibility policies (`require_backup_eligible` / `reject_backup_eligible`) | ✅ Implemented — opt-in; use to enforce sync-capable or hardware-bound-only credentials |
+| Cross-origin rejection (`reject_cross_origin`) | ✅ Implemented — opt-in; rejects responses with `crossOrigin: true` in `clientDataJSON` |
+| Typed extension accessors (`ExtensionView`, `CredProps`, `PrfExtension`) | ✅ Implemented — typed `credProps`, `appid`, `prf` accessors on `RegistrationResult` and `AuthenticationResult` |
 | Single-use challenge enforcement | ✅ Implemented — opt-in via `enforce_single_use_challenges(true)`; caller-managed by default |
 | Sign-count replay attack detection | ✅ Implemented |
 | Challenge generation (32-byte CSPRNG) | ✅ Implemented |
@@ -173,7 +179,7 @@ curl -s -X POST http://localhost:3000/authenticate/begin \
 ## Running tests
 
 ```bash
-cargo test                        # all 255+ unit + integration + doc tests
+cargo test                        # all 297+ unit + integration + doc tests
 cargo test --features serde       # +5 serde round-trip tests
 cargo clippy -- -D warnings       # lint (zero-warning policy)
 cargo fmt --check                 # formatting
@@ -272,6 +278,7 @@ boundary.
 | `serde_bytes` 0.11 | Efficient `Vec<u8>` serialization (optional, enabled by `features = ["serde"]`) |
 | `base64` 0.22 | URL-safe base64 encoding/decoding |
 | `thiserror` 1 | Structured, descriptive error types |
+| `x509-parser` 0.16 | X.509 certificate parsing and chain verification for attestation formats |
 
 ---
 

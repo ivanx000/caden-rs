@@ -308,6 +308,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - **End-to-end demo** — `examples/demo.rs` exercises ES256 + RS256 registration, authentication,
   and replay attack rejection entirely in software
 
+[0.9.0]: https://github.com/ivanxie/caden-rs/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/ivanxie/caden-rs/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/ivanxie/caden-rs/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/ivanxie/caden-rs/compare/v0.5.0...v0.6.0

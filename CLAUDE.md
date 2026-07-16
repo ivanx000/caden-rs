@@ -50,7 +50,9 @@ The library follows the [W3C WebAuthn Level 3 specification](https://www.w3.org/
 | `src/client_data.rs` | `clientDataJSON` base64url → JSON → `ClientData` |
 | `src/authenticator_data.rs` | Binary authenticator data → `AuthenticatorData`; `CoseKey` enum |
 | `src/attestation.rs` | Attestation verification: "none", "packed", "fido-u2f", "android-key", "apple", "tpm" |
-| `src/registration.rs` | §7.1 registration ceremony; dispatches `CoseKey` → `PublicKey` |
+| `src/extensions.rs` | Typed extension accessors: `ExtensionView`, `CredProps`, `PrfExtension`, `PrfValues` |
+| `src/options.rs` | Registration/authentication options: `RegistrationOptions`, `AuthenticationOptions`, `UserEntity`, `AuthenticatorSelection`, and supporting enums |
+| `src/registration.rs` | §7.1 registration ceremony; dispatches `CoseKey` → `PublicKey`; `begin_registration` options builder |
 | `src/authentication.rs` | §7.2 authentication ceremony; dispatches `PublicKey` → verifier |
 | `examples/demo.rs` | End-to-end demo: ES256, RS256, ES384, EdDSA registration/auth/replay |
 | `examples/server.rs` | Axum HTTP server: all 5 WebAuthn endpoints with in-memory state |
@@ -545,8 +547,7 @@ added as dev-dependencies.
 
 ### crates.io preparation
 
-- Package name changed to `webauthn-rs-demo` (the `webauthn` name is taken);
-  `[lib] name = "webauthn"` keeps the Rust import path unchanged for all existing code.
+- Package name is `caden` (matches the project rename); `[lib] name = "webauthn"` keeps the Rust import path (`use webauthn::...`) unchanged for all existing code.
 - `Cargo.toml` updated with `description`, `keywords`, `categories`, `repository`,
   `documentation`, `license = "MIT OR Apache-2.0"`, `rust-version = "1.88"`.
 - `LICENSE-MIT` and `LICENSE-APACHE` added.
@@ -569,6 +570,65 @@ added as dev-dependencies.
 3. `cargo package --no-verify` to verify the .crate file.
 4. `git tag v<version> && git push --tags`.
 5. `cargo publish` (requires `cargo login` with crates.io token first).
+
+---
+
+## Post-Phase-5 additions (v0.7.0 – v0.9.0)
+
+### v0.7.0 — Backup state and full demo coverage
+
+- **`backup_state` on `Credential`** — tracks whether the credential's private key
+  is currently backed up (BS flag, §6.1 bit 4). Complements `backup_eligible` (BE
+  flag, bit 3). Both fields are exposed on `RegistrationResult` and
+  `AuthenticationResult`. Serde round-trips them correctly.
+- **Full demo coverage** — `examples/demo.rs` now exercises all four algorithms:
+  ES256, RS256, ES384, and EdDSA (registration → authentication → replay rejection).
+- **All four algorithms in `examples/server.rs`** — `POST /register/begin` now
+  advertises COSE IDs `-7`, `-35`, `-8`, and `-257`.
+
+### v0.8.0 — Typed extension accessors and `#[non_exhaustive]`
+
+**`src/extensions.rs`** (new module) provides typed accessors for the three most
+common WebAuthn extensions:
+
+- `CredProps` (`"credProps"`, §10.4) — `rk: Option<bool>` indicating whether the
+  credential is a discoverable credential.
+- `appid` (`"appid"`, §10.1) — `Option<bool>` indicating whether the legacy U2F
+  App ID substitution was applied.
+- `PrfExtension` / `PrfValues` (`"prf"`) — typed PRF output with `first` and
+  optional `second` byte-string results.
+- `ExtensionView` — a borrow of the raw extension map with `cred_props()`, `appid()`,
+  and `prf()` accessor methods. Obtain via `RegistrationResult::extensions()` or
+  `AuthenticationResult::extensions()`.
+
+**`#[non_exhaustive]`** was added to `AttestationType`, `PublicKey`, and
+`WebAuthnError`. Adding new variants to these enums is no longer a semver-breaking
+change. Downstream callers that exhaustively match them must add a `_ => ...` arm.
+
+### v0.9.0 — Registration/authentication options API
+
+**`src/options.rs`** (new module) adds the "begin" half of each WebAuthn ceremony.
+
+New `RelyingParty` methods:
+
+- **`begin_registration(user, existing_ids)`** — builds and returns a
+  `RegistrationOptions` value ready to serialize as
+  `PublicKeyCredentialCreationOptions`. Accepts an iterator of existing credential
+  ID bytes for `excludeCredentials` to prevent duplicate registrations. **Breaking
+  change**: callers must now pass a second argument; use `std::iter::empty::<Vec<u8>>()`
+  if there are no existing credentials.
+- **`authentication_options(cred_ids)`** — builds and returns an
+  `AuthenticationOptions` value ready to serialize as
+  `PublicKeyCredentialRequestOptions`. An empty iterator produces the discoverable-
+  credential (passkey) flow where the browser shows all matching credentials.
+- **`default_authenticator_selection(sel)`** — sets a default `AuthenticatorSelection`
+  copied into every `RegistrationOptions`.
+
+New types in `src/options.rs`: `UserEntity`, `RegistrationOptions`,
+`AuthenticationOptions`, `AuthenticatorSelection`, `AttestationPreference`,
+`AuthenticatorAttachment`, `ResidentKeyRequirement`, `UserVerificationRequirement`,
+`PublicKeyCredentialDescriptor`, `AuthenticatorTransport`. All W3C JSON keys use
+camelCase; credential IDs are base64url-encoded with no padding.
 
 ---
 

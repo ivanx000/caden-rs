@@ -66,8 +66,24 @@ webauthn
 ├── attestation.rs          Attestation statement verification
 │   └── verify()            Supports "none", "packed", "fido-u2f", "android-key", "apple", "tpm"
 │
+├── extensions.rs           Typed extension accessors (§10.x)
+│   ├── ExtensionView       Borrow of the raw extension map with typed methods
+│   ├── CredProps           "credProps" — rk: Option<bool> (§10.4)
+│   ├── PrfExtension        "prf" — PRF output (first + optional second)
+│   └── PrfValues           PRF byte-string results
+│
+├── options.rs              Registration / authentication options (W3C ceremony begin)
+│   ├── RegistrationOptions   → PublicKeyCredentialCreationOptions (JSON)
+│   ├── AuthenticationOptions → PublicKeyCredentialRequestOptions (JSON)
+│   ├── UserEntity          id + name + display_name
+│   ├── AuthenticatorSelection  attachment + residentKey + userVerification
+│   ├── PublicKeyCredentialDescriptor  id + transports (allowCredentials / excludeCredentials)
+│   └── enums: AttestationPreference, AuthenticatorAttachment,
+│              ResidentKeyRequirement, UserVerificationRequirement, AuthenticatorTransport
+│
 ├── registration.rs         §7.1 registration ceremony
-│   └── verify_registration()  Dispatches CoseKey → PublicKey::ES256 / ::ES384 / ::EdDSA / ::RS256
+│   ├── verify_registration()  Dispatches CoseKey → PublicKey::ES256 / ::ES384 / ::EdDSA / ::RS256
+│   └── begin_registration()   Builds RegistrationOptions (challenge + excludeCredentials + params)
 │
 └── authentication.rs       §7.2 authentication ceremony
     └── verify_authentication()  Dispatches PublicKey → verify_es256 / verify_es384 / verify_eddsa / verify_rs256
@@ -106,7 +122,9 @@ AuthenticatorAttestationResponse
 
 → attestation::verify(fmt, ...)   ["none", "packed", "fido-u2f", "android-key", "apple", "tpm"]
 → Credential { id, public_key, sign_count, user_id, rp_id, created_at, backup_eligible, backup_state }
-→ RegistrationResult { credential, attestation_type, backup_eligible, backup_state }
+→ RegistrationResult { credential, attestation_type, backup_eligible, backup_state,
+                       extensions: Option<HashMap<String, Value>> }
+   extensions() → Option<ExtensionView>  [cred_props(), appid(), prf()]
 ```
 
 ## Data flow: authentication
@@ -141,8 +159,10 @@ Stored Credential + AuthenticatorAssertionResponse
         return AuthenticationResult {
           credential_id, new_sign_count,
           user_present, user_verified,
-          backup_eligible, backup_state
+          backup_eligible, backup_state,
+          extensions: Option<HashMap<String, Value>>
         }
+         extensions() → Option<ExtensionView>  [cred_props(), appid(), prf()]
 ```
 
 ---
@@ -229,6 +249,9 @@ returns 270 bytes (RSAPublicKey), not 294 bytes (SubjectPublicKeyInfo).
 | §8.6 FIDO U2F attestation | `attestation.rs::verify_fido_u2f` |
 | §8.7 "none" attestation | `attestation.rs::verify` |
 | §8.8 Apple attestation | `attestation.rs::verify_apple` |
+| §10.1 `appid` extension | `extensions.rs::ExtensionView::appid` |
+| §10.4 `credProps` extension | `extensions.rs::ExtensionView::cred_props` |
+| `prf` extension | `extensions.rs::ExtensionView::prf` |
 | RFC 8152 COSE keys | `authenticator_data::parse_cose_key` |
 
 ---
