@@ -388,6 +388,7 @@ session.
 | Command | When to use |
 |---------|-------------|
 | `/add-algorithm` | Adding a new COSE algorithm (RS256, EdDSA, etc.) — scaffolds enum variant, crypto function, and tests |
+| `/run` | Full interactive walkthrough: build → demo (all 4 algorithms) → test suite → HTTP server endpoint tour |
 | `/run-demo` | Quickly verify the end-to-end demo works and print its output |
 | `/check` | Run the full quality suite (build + clippy + test + fmt) before a PR |
 | `/spec-audit` | Audit ceremony code for missing W3C spec step comments — important for security review |
