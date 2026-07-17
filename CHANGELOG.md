@@ -7,6 +7,18 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Added
+
+- **Packed attestation AAGUID certificate binding** (W3C §8.2.1 step 2) — when
+  a `"packed"` basic-attestation leaf certificate carries the
+  `id-fido-gen-ce-aaguid` X.509 extension (OID `1.3.6.1.4.1.45724.1.1.4`), its
+  value is now verified against the AAGUID reported in `authenticatorData`.
+  The extension is optional and the check is skipped when it is absent (or
+  when the leaf certificate cannot be parsed as DER, matching the existing
+  fast path used when no chain/trust-anchor validation is in play). A
+  mismatch returns the new `WebAuthnError::AttestationAaguidMismatch`
+  variant.
+
 ---
 
 ## [0.9.0] — 2026-07-14

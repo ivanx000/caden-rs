@@ -31,7 +31,9 @@
 //! - **Basic attestation** (`x5c` present): a separate attestation key with a
 //!   certificate chain signs the data. The signature over `authData ||
 //!   clientDataHash` is verified using the leaf certificate's public key, and the
-//!   full chain order is verified.
+//!   full chain order is verified. If the leaf certificate carries the
+//!   `id-fido-gen-ce-aaguid` extension (OID 1.3.6.1.4.1.45724.1.1.4), its value
+//!   must match the AAGUID in authenticatorData (§8.2.1 step 2).
 //! - **ECDAA**: deprecated and not implemented.
 
 use ciborium::value::Value;
@@ -139,6 +141,44 @@ fn verify_x5c_chain(certs: &[Vec<u8>], trust_anchors: &[Vec<u8>]) -> Result<Atte
     Err(WebAuthnError::AttestationRootUntrusted)
 }
 
+/// OID for the `id-fido-gen-ce-aaguid` X.509 extension (FIDO Alliance).
+const FIDO_GEN_CE_AAGUID_OID: &str = "1.3.6.1.4.1.45724.1.1.4";
+
+/// Verify the attestation certificate's `id-fido-gen-ce-aaguid` extension, if
+/// present, against the AAGUID reported in `authenticatorData` (W3C WebAuthn
+/// §8.2.1 step 2). The extension is optional; when absent this check passes
+/// trivially. When present, its DER value (`OCTET STRING` wrapping the 16-byte
+/// AAGUID) must equal `aaguid` exactly — a mismatch means the certificate was
+/// issued for a different authenticator model than the one that produced this
+/// attestation.
+///
+/// A leaf certificate that fails to parse as DER is treated the same as one
+/// without the extension: presence can't be determined, so there is nothing
+/// to check here. Full DER validity is enforced separately by
+/// [`verify_x5c_chain`] whenever a chain or trust anchor is actually in play.
+fn verify_cert_aaguid_extension(cert_der: &[u8], aaguid: &[u8; 16]) -> Result<()> {
+    let Ok((_, cert)) = X509Certificate::from_der(cert_der) else {
+        return Ok(());
+    };
+
+    for ext in cert.extensions() {
+        if ext.oid.to_id_string() != FIDO_GEN_CE_AAGUID_OID {
+            continue;
+        }
+        // extnValue content is itself a DER OCTET STRING wrapping the AAGUID:
+        // 04 10 <16 bytes>.
+        let matches = ext.value.len() == 18
+            && ext.value[0] == 0x04
+            && ext.value[1] == 0x10
+            && ext.value[2..18] == aaguid[..];
+        if !matches {
+            return Err(WebAuthnError::AttestationAaguidMismatch);
+        }
+    }
+
+    Ok(())
+}
+
 /// Verify the attestation statement and return the [`AttestationType`].
 ///
 /// # Arguments
@@ -150,6 +190,9 @@ fn verify_x5c_chain(certs: &[Vec<u8>], trust_anchors: &[Vec<u8>]) -> Result<Atte
 /// * `credential_id`        — The credential ID bytes from attested credential data.
 /// * `trust_anchors` — DER-encoded root CA certificates; when non-empty the
 ///   chain root is verified against these anchors.
+/// * `aaguid` — The AAGUID from attested credential data, checked against the
+///   attestation certificate's `id-fido-gen-ce-aaguid` extension when present
+///   (packed format only; §8.2.1 step 2).
 ///
 /// # Errors
 /// Returns [`WebAuthnError::InvalidAttestationObject`] if the attestation
@@ -160,6 +203,9 @@ fn verify_x5c_chain(certs: &[Vec<u8>], trust_anchors: &[Vec<u8>]) -> Result<Atte
 /// is broken.
 /// Returns [`WebAuthnError::AttestationRootUntrusted`] if trust anchors are
 /// configured but none match the chain root.
+/// Returns [`WebAuthnError::AttestationAaguidMismatch`] if the packed
+/// attestation certificate's AAGUID extension does not match `aaguid`.
+#[allow(clippy::too_many_arguments)]
 pub fn verify(
     fmt: &str,
     att_stmt: &Value,
@@ -168,6 +214,7 @@ pub fn verify(
     credential_public_key: &PublicKey,
     credential_id: &[u8],
     trust_anchors: &[Vec<u8>],
+    aaguid: &[u8; 16],
 ) -> Result<AttestationType> {
     match fmt {
         // §8.7 — "none" attestation: the authenticator is not attested.
@@ -182,6 +229,7 @@ pub fn verify(
             client_data_hash,
             credential_public_key,
             trust_anchors,
+            aaguid,
         ),
 
         // §8.6 — fido-u2f attestation: used by legacy YubiKey 4-series and U2F tokens.
@@ -238,6 +286,7 @@ fn verify_packed(
     client_data_hash: &[u8; 32],
     credential_public_key: &PublicKey,
     trust_anchors: &[Vec<u8>],
+    aaguid: &[u8; 16],
 ) -> Result<AttestationType> {
     let stmt_map = match att_stmt {
         Value::Map(m) => m,
@@ -317,6 +366,10 @@ fn verify_packed(
             }
             other => return Err(WebAuthnError::UnsupportedAlgorithm(other)),
         }
+
+        // §8.2.1 step 2: if the leaf cert carries the id-fido-gen-ce-aaguid
+        // extension, its value must match authenticatorData's aaguid.
+        verify_cert_aaguid_extension(&certs[0], aaguid)?;
 
         // §8.2 step 2.c: verify the x5c chain order and optionally the root.
         verify_x5c_chain(&certs, trust_anchors)
@@ -1341,7 +1394,16 @@ mod tests {
     #[test]
     fn accepts_none_format() {
         let pk = dummy_es256_key();
-        let result = verify("none", &none_att_stmt(), &[], &[0u8; 32], &pk, &[], &[]);
+        let result = verify(
+            "none",
+            &none_att_stmt(),
+            &[],
+            &[0u8; 32],
+            &pk,
+            &[],
+            &[],
+            &[0u8; 16],
+        );
         assert!(matches!(result, Ok(AttestationType::None)));
     }
 
@@ -1356,6 +1418,7 @@ mod tests {
             &pk,
             &[],
             &[],
+            &[0u8; 16],
         );
         assert!(matches!(result, Ok(AttestationType::None)));
     }
@@ -1397,8 +1460,177 @@ mod tests {
             ),
         ]);
         // Single-cert chain, no trust anchors → Basic (no x509-parser call needed).
-        let result = verify("packed", &stmt, auth_data, &client_data_hash, &pk, &[], &[]);
+        let result = verify(
+            "packed",
+            &stmt,
+            auth_data,
+            &client_data_hash,
+            &pk,
+            &[],
+            &[],
+            &[0u8; 16],
+        );
         assert!(matches!(result, Ok(AttestationType::Basic)));
+    }
+
+    // ── id-fido-gen-ce-aaguid extension tests ────────────────────────────────
+
+    /// Build a self-signed leaf cert carrying the `id-fido-gen-ce-aaguid`
+    /// extension (OID 1.3.6.1.4.1.45724.1.1.4) with the given AAGUID value.
+    fn make_leaf_with_aaguid_extension(aaguid: &[u8; 16]) -> (rcgen::KeyPair, Vec<u8>) {
+        let key = rcgen::KeyPair::generate().expect("test setup");
+        let mut params = rcgen::CertificateParams::default();
+        let mut content = vec![0x04, 0x10]; // OCTET STRING, 16 bytes
+        content.extend_from_slice(aaguid);
+        params
+            .custom_extensions
+            .push(rcgen::CustomExtension::from_oid_content(
+                &[1, 3, 6, 1, 4, 1, 45724, 1, 1, 4],
+                content,
+            ));
+        let cert = params.self_signed(&key).expect("test setup");
+        (key, cert.der().to_vec())
+    }
+
+    #[test]
+    fn cert_aaguid_extension_absent_passes() {
+        let (_key, _cert, cert_der) = make_ca();
+        assert!(verify_cert_aaguid_extension(&cert_der, &[0x11u8; 16]).is_ok());
+    }
+
+    #[test]
+    fn cert_aaguid_extension_matching_passes() {
+        let aaguid = [0x42u8; 16];
+        let (_key, cert_der) = make_leaf_with_aaguid_extension(&aaguid);
+        assert!(verify_cert_aaguid_extension(&cert_der, &aaguid).is_ok());
+    }
+
+    #[test]
+    fn cert_aaguid_extension_mismatch_rejected() {
+        let cert_aaguid = [0x42u8; 16];
+        let (_key, cert_der) = make_leaf_with_aaguid_extension(&cert_aaguid);
+        let auth_data_aaguid = [0x99u8; 16];
+        let result = verify_cert_aaguid_extension(&cert_der, &auth_data_aaguid);
+        assert!(matches!(
+            result,
+            Err(WebAuthnError::AttestationAaguidMismatch)
+        ));
+    }
+
+    #[test]
+    fn cert_aaguid_extension_unparseable_cert_passes() {
+        // A non-DER cert can't be checked for extension presence; skip rather
+        // than fail, matching the fast-path used elsewhere when no chain or
+        // trust anchor validation is in play.
+        let fake_cert = make_fake_p256_cert(&[0x04u8; 65]);
+        assert!(verify_cert_aaguid_extension(&fake_cert, &[0x11u8; 16]).is_ok());
+    }
+
+    #[test]
+    fn packed_basic_attestation_aaguid_extension_matches_returns_basic() {
+        use ring::rand::SystemRandom;
+        use ring::signature::{EcdsaKeyPair, ECDSA_P256_SHA256_ASN1_SIGNING};
+
+        let aaguid = [0x77u8; 16];
+        let (key, cert_der) = make_leaf_with_aaguid_extension(&aaguid);
+
+        let rng = SystemRandom::new();
+        let kp = EcdsaKeyPair::from_pkcs8(
+            &ECDSA_P256_SHA256_ASN1_SIGNING,
+            key.serialize_der().as_ref(),
+            &rng,
+        )
+        .expect("test setup");
+
+        let pk = dummy_es256_key();
+        let auth_data = b"fake-auth-data";
+        let client_data_hash = [0xABu8; 32];
+        let mut msg = Vec::new();
+        msg.extend_from_slice(auth_data);
+        msg.extend_from_slice(&client_data_hash);
+        let sig = kp.sign(&rng, &msg).expect("test setup");
+
+        let stmt = Value::Map(vec![
+            (
+                Value::Text("alg".to_string()),
+                Value::Integer((-7i64).into()),
+            ),
+            (
+                Value::Text("sig".to_string()),
+                Value::Bytes(sig.as_ref().to_vec()),
+            ),
+            (
+                Value::Text("x5c".to_string()),
+                Value::Array(vec![Value::Bytes(cert_der)]),
+            ),
+        ]);
+        let result = verify(
+            "packed",
+            &stmt,
+            auth_data,
+            &client_data_hash,
+            &pk,
+            &[],
+            &[],
+            &aaguid,
+        );
+        assert!(matches!(result, Ok(AttestationType::Basic)));
+    }
+
+    #[test]
+    fn packed_basic_attestation_aaguid_extension_mismatch_rejected() {
+        use ring::rand::SystemRandom;
+        use ring::signature::{EcdsaKeyPair, ECDSA_P256_SHA256_ASN1_SIGNING};
+
+        let cert_aaguid = [0x77u8; 16];
+        let (key, cert_der) = make_leaf_with_aaguid_extension(&cert_aaguid);
+
+        let rng = SystemRandom::new();
+        let kp = EcdsaKeyPair::from_pkcs8(
+            &ECDSA_P256_SHA256_ASN1_SIGNING,
+            key.serialize_der().as_ref(),
+            &rng,
+        )
+        .expect("test setup");
+
+        let pk = dummy_es256_key();
+        let auth_data = b"fake-auth-data";
+        let client_data_hash = [0xABu8; 32];
+        let mut msg = Vec::new();
+        msg.extend_from_slice(auth_data);
+        msg.extend_from_slice(&client_data_hash);
+        let sig = kp.sign(&rng, &msg).expect("test setup");
+
+        let stmt = Value::Map(vec![
+            (
+                Value::Text("alg".to_string()),
+                Value::Integer((-7i64).into()),
+            ),
+            (
+                Value::Text("sig".to_string()),
+                Value::Bytes(sig.as_ref().to_vec()),
+            ),
+            (
+                Value::Text("x5c".to_string()),
+                Value::Array(vec![Value::Bytes(cert_der)]),
+            ),
+        ]);
+        // authenticatorData's aaguid differs from the cert extension's aaguid.
+        let auth_data_aaguid = [0x99u8; 16];
+        let result = verify(
+            "packed",
+            &stmt,
+            auth_data,
+            &client_data_hash,
+            &pk,
+            &[],
+            &[],
+            &auth_data_aaguid,
+        );
+        assert!(matches!(
+            result,
+            Err(WebAuthnError::AttestationAaguidMismatch)
+        ));
     }
 
     #[test]
@@ -1412,6 +1644,7 @@ mod tests {
             &pk,
             &[],
             &[],
+            &[0u8; 16],
         );
         assert!(matches!(
             result,
@@ -1426,7 +1659,7 @@ mod tests {
             Value::Text("sig".to_string()),
             Value::Bytes(vec![0u8; 64]),
         )]);
-        let result = verify("packed", &stmt, &[], &[0u8; 32], &pk, &[], &[]);
+        let result = verify("packed", &stmt, &[], &[0u8; 32], &pk, &[], &[], &[0u8; 16]);
         assert!(matches!(
             result,
             Err(WebAuthnError::InvalidAttestationObject(ref m)) if m.contains("alg")
@@ -1440,7 +1673,7 @@ mod tests {
             Value::Text("alg".to_string()),
             Value::Integer((-7i64).into()),
         )]);
-        let result = verify("packed", &stmt, &[], &[0u8; 32], &pk, &[], &[]);
+        let result = verify("packed", &stmt, &[], &[0u8; 32], &pk, &[], &[], &[0u8; 16]);
         assert!(matches!(
             result,
             Err(WebAuthnError::InvalidAttestationObject(ref m)) if m.contains("sig")
@@ -1458,7 +1691,7 @@ mod tests {
             ),
             (Value::Text("sig".to_string()), Value::Bytes(vec![0u8; 64])),
         ]);
-        let result = verify("packed", &stmt, &[], &[0u8; 32], &pk, &[], &[]);
+        let result = verify("packed", &stmt, &[], &[0u8; 32], &pk, &[], &[], &[0u8; 16]);
         assert!(matches!(
             result,
             Err(WebAuthnError::InvalidAttestationObject(ref m)) if m.contains("alg")
@@ -1501,7 +1734,16 @@ mod tests {
             ),
         ]);
 
-        let result = verify("packed", &stmt, auth_data, &client_data_hash, &pk, &[], &[]);
+        let result = verify(
+            "packed",
+            &stmt,
+            auth_data,
+            &client_data_hash,
+            &pk,
+            &[],
+            &[],
+            &[0u8; 16],
+        );
         assert!(matches!(result, Ok(AttestationType::SelfAttestation)));
     }
 
@@ -1531,7 +1773,16 @@ mod tests {
             ),
         ]);
 
-        let result = verify("packed", &stmt, b"auth", &[0u8; 32], &pk, &[], &[]);
+        let result = verify(
+            "packed",
+            &stmt,
+            b"auth",
+            &[0u8; 32],
+            &pk,
+            &[],
+            &[],
+            &[0u8; 16],
+        );
         assert!(matches!(
             result,
             Err(WebAuthnError::SignatureVerificationFailed)
@@ -1547,7 +1798,16 @@ mod tests {
             Value::Text("sig".to_string()),
             Value::Bytes(vec![0u8; 64]),
         )]);
-        let result = verify("fido-u2f", &stmt, &[0u8; 37], &[0u8; 32], &pk, &[], &[]);
+        let result = verify(
+            "fido-u2f",
+            &stmt,
+            &[0u8; 37],
+            &[0u8; 32],
+            &pk,
+            &[],
+            &[],
+            &[0u8; 16],
+        );
         assert!(
             matches!(result, Err(WebAuthnError::InvalidAttestationObject(ref m)) if m.contains("x5c"))
         );
@@ -1560,7 +1820,16 @@ mod tests {
             Value::Text("x5c".to_string()),
             Value::Array(vec![Value::Bytes(vec![0u8; 10])]),
         )]);
-        let result = verify("fido-u2f", &stmt, &[0u8; 37], &[0u8; 32], &pk, &[], &[]);
+        let result = verify(
+            "fido-u2f",
+            &stmt,
+            &[0u8; 37],
+            &[0u8; 32],
+            &pk,
+            &[],
+            &[],
+            &[0u8; 16],
+        );
         assert!(
             matches!(result, Err(WebAuthnError::InvalidAttestationObject(ref m)) if m.contains("sig"))
         );
@@ -1576,7 +1845,16 @@ mod tests {
                 Value::Array(vec![]), // empty
             ),
         ]);
-        let result = verify("fido-u2f", &stmt, &[0u8; 37], &[0u8; 32], &pk, &[], &[]);
+        let result = verify(
+            "fido-u2f",
+            &stmt,
+            &[0u8; 37],
+            &[0u8; 32],
+            &pk,
+            &[],
+            &[],
+            &[0u8; 16],
+        );
         assert!(
             matches!(result, Err(WebAuthnError::InvalidAttestationObject(ref m)) if m.contains("non-empty"))
         );
@@ -1593,7 +1871,16 @@ mod tests {
                 Value::Array(vec![Value::Bytes(make_fake_p256_cert(&[0x04; 65]))]),
             ),
         ]);
-        let result = verify("fido-u2f", &stmt, &[0u8; 37], &[0u8; 32], &pk, &[], &[]);
+        let result = verify(
+            "fido-u2f",
+            &stmt,
+            &[0u8; 37],
+            &[0u8; 32],
+            &pk,
+            &[],
+            &[],
+            &[0u8; 16],
+        );
         assert!(
             matches!(result, Err(WebAuthnError::InvalidAttestationObject(ref m)) if m.contains("P-256"))
         );
@@ -1663,6 +1950,7 @@ mod tests {
             &credential_public_key,
             credential_id,
             &[],
+            &[0u8; 16],
         );
         assert!(matches!(result, Ok(AttestationType::Basic)));
     }
@@ -1713,6 +2001,7 @@ mod tests {
             &credential_public_key,
             b"cred-id",
             &[],
+            &[0u8; 16],
         );
         assert!(matches!(
             result,
@@ -1774,6 +2063,7 @@ mod tests {
             &credential_public_key,
             &[],
             &[],
+            &[0u8; 16],
         );
         assert!(matches!(result, Ok(AttestationType::Basic)));
     }
@@ -1819,6 +2109,7 @@ mod tests {
             &credential_public_key,
             &[],
             &[],
+            &[0u8; 16],
         );
         assert!(matches!(
             result,
@@ -1836,7 +2127,16 @@ mod tests {
             ),
             (Value::Text("sig".to_string()), Value::Bytes(vec![0u8; 64])),
         ]);
-        let result = verify("android-key", &stmt, &[], &[0u8; 32], &pk, &[], &[]);
+        let result = verify(
+            "android-key",
+            &stmt,
+            &[],
+            &[0u8; 32],
+            &pk,
+            &[],
+            &[],
+            &[0u8; 16],
+        );
         assert!(
             matches!(result, Err(WebAuthnError::InvalidAttestationObject(ref m)) if m.contains("x5c"))
         );
@@ -1855,7 +2155,16 @@ mod tests {
                 Value::Array(vec![Value::Bytes(make_fake_p256_cert(&[0x04; 65]))]),
             ),
         ]);
-        let result = verify("android-key", &stmt, &[], &[0u8; 32], &pk, &[], &[]);
+        let result = verify(
+            "android-key",
+            &stmt,
+            &[],
+            &[0u8; 32],
+            &pk,
+            &[],
+            &[],
+            &[0u8; 16],
+        );
         assert!(
             matches!(result, Err(WebAuthnError::InvalidAttestationObject(ref m)) if m.contains("sig"))
         );
@@ -1907,6 +2216,7 @@ mod tests {
             &credential_public_key,
             &[],
             &[],
+            &[0u8; 16],
         );
         assert!(
             matches!(result, Err(WebAuthnError::InvalidAttestationObject(ref m)) if m.contains("does not match"))
@@ -1928,7 +2238,16 @@ mod tests {
                 Value::Array(vec![Value::Bytes(make_fake_p256_cert(&[0x04; 65]))]),
             ),
         ]);
-        let result = verify("android-key", &stmt, &[], &[0u8; 32], &pk, &[], &[]);
+        let result = verify(
+            "android-key",
+            &stmt,
+            &[],
+            &[0u8; 32],
+            &pk,
+            &[],
+            &[],
+            &[0u8; 16],
+        );
         assert!(
             matches!(result, Err(WebAuthnError::InvalidAttestationObject(ref m)) if m.contains("ES256"))
         );
@@ -1940,7 +2259,7 @@ mod tests {
     fn apple_rejects_missing_x5c() {
         let pk = dummy_es256_key();
         let stmt = Value::Map(vec![]);
-        let result = verify("apple", &stmt, &[], &[0u8; 32], &pk, &[], &[]);
+        let result = verify("apple", &stmt, &[], &[0u8; 32], &pk, &[], &[], &[0u8; 16]);
         assert!(
             matches!(result, Err(WebAuthnError::InvalidAttestationObject(ref m)) if m.contains("x5c"))
         );
@@ -1950,7 +2269,7 @@ mod tests {
     fn apple_rejects_empty_x5c() {
         let pk = dummy_es256_key();
         let stmt = Value::Map(vec![(Value::Text("x5c".to_string()), Value::Array(vec![]))]);
-        let result = verify("apple", &stmt, &[], &[0u8; 32], &pk, &[], &[]);
+        let result = verify("apple", &stmt, &[], &[0u8; 32], &pk, &[], &[], &[0u8; 16]);
         assert!(
             matches!(result, Err(WebAuthnError::InvalidAttestationObject(ref m)) if m.contains("non-empty"))
         );
@@ -1990,6 +2309,7 @@ mod tests {
             &credential_public_key,
             &[],
             &[],
+            &[0u8; 16],
         );
         assert!(
             matches!(result, Err(WebAuthnError::InvalidAttestationObject(ref m)) if m.contains("nonce"))
@@ -2047,6 +2367,7 @@ mod tests {
             &credential_public_key,
             &[],
             &[],
+            &[0u8; 16],
         );
         assert!(
             matches!(result, Err(WebAuthnError::InvalidAttestationObject(ref m)) if m.contains("does not match"))
@@ -2093,6 +2414,7 @@ mod tests {
             &credential_public_key,
             &[],
             &[],
+            &[0u8; 16],
         );
         assert!(matches!(result, Ok(AttestationType::Basic)));
     }
@@ -2155,7 +2477,7 @@ mod tests {
                 Value::Bytes(vec![0u8; 4]),
             ),
         ]);
-        let result = verify("tpm", &stmt, &[], &[0u8; 32], &pk, &[], &[]);
+        let result = verify("tpm", &stmt, &[], &[0u8; 32], &pk, &[], &[], &[0u8; 16]);
         assert!(
             matches!(result, Err(WebAuthnError::InvalidAttestationObject(ref m)) if m.contains("ver"))
         );
@@ -2187,7 +2509,7 @@ mod tests {
                 Value::Bytes(vec![0u8; 4]),
             ),
         ]);
-        let result = verify("tpm", &stmt, &[], &[0u8; 32], &pk, &[], &[]);
+        let result = verify("tpm", &stmt, &[], &[0u8; 32], &pk, &[], &[], &[0u8; 16]);
         assert!(
             matches!(result, Err(WebAuthnError::InvalidAttestationObject(ref m)) if m.contains("2.0"))
         );
@@ -2215,7 +2537,7 @@ mod tests {
                 Value::Bytes(vec![0u8; 4]),
             ),
         ]);
-        let result = verify("tpm", &stmt, &[], &[0u8; 32], &pk, &[], &[]);
+        let result = verify("tpm", &stmt, &[], &[0u8; 32], &pk, &[], &[], &[0u8; 16]);
         assert!(
             matches!(result, Err(WebAuthnError::InvalidAttestationObject(ref m)) if m.contains("alg"))
         );
@@ -2248,7 +2570,7 @@ mod tests {
                 Value::Bytes(vec![0u8; 4]),
             ),
         ]);
-        let result = verify("tpm", &stmt, &[], &[0u8; 32], &pk, &[], &[]);
+        let result = verify("tpm", &stmt, &[], &[0u8; 32], &pk, &[], &[], &[0u8; 16]);
         assert!(
             matches!(result, Err(WebAuthnError::InvalidAttestationObject(ref m)) if m.contains("alg"))
         );
@@ -2276,7 +2598,7 @@ mod tests {
                 Value::Bytes(vec![0u8; 4]),
             ),
         ]);
-        let result = verify("tpm", &stmt, &[], &[0u8; 32], &pk, &[], &[]);
+        let result = verify("tpm", &stmt, &[], &[0u8; 32], &pk, &[], &[], &[0u8; 16]);
         assert!(
             matches!(result, Err(WebAuthnError::InvalidAttestationObject(ref m)) if m.contains("x5c"))
         );
@@ -2305,7 +2627,7 @@ mod tests {
                 Value::Bytes(vec![0u8; 4]),
             ),
         ]);
-        let result = verify("tpm", &stmt, &[], &[0u8; 32], &pk, &[], &[]);
+        let result = verify("tpm", &stmt, &[], &[0u8; 32], &pk, &[], &[], &[0u8; 16]);
         assert!(
             matches!(result, Err(WebAuthnError::InvalidAttestationObject(ref m)) if m.contains("non-empty"))
         );
@@ -2333,7 +2655,7 @@ mod tests {
                 Value::Bytes(vec![0u8; 4]),
             ),
         ]);
-        let result = verify("tpm", &stmt, &[], &[0u8; 32], &pk, &[], &[]);
+        let result = verify("tpm", &stmt, &[], &[0u8; 32], &pk, &[], &[], &[0u8; 16]);
         assert!(
             matches!(result, Err(WebAuthnError::InvalidAttestationObject(ref m)) if m.contains("certInfo"))
         );
@@ -2361,7 +2683,7 @@ mod tests {
                 Value::Bytes(vec![0u8; 4]),
             ),
         ]);
-        let result = verify("tpm", &stmt, &[], &[0u8; 32], &pk, &[], &[]);
+        let result = verify("tpm", &stmt, &[], &[0u8; 32], &pk, &[], &[], &[0u8; 16]);
         assert!(
             matches!(result, Err(WebAuthnError::InvalidAttestationObject(ref m)) if m.contains("pubArea"))
         );
@@ -2419,7 +2741,7 @@ mod tests {
             (Value::Text("pubArea".to_string()), Value::Bytes(pub_area)),
         ]);
 
-        let result = verify("tpm", &stmt, &[], &[0u8; 32], &pk, &[], &[]);
+        let result = verify("tpm", &stmt, &[], &[0u8; 32], &pk, &[], &[], &[0u8; 16]);
         assert!(
             matches!(result, Err(WebAuthnError::InvalidAttestationObject(ref m)) if m.contains("magic"))
         );
@@ -2477,7 +2799,7 @@ mod tests {
             (Value::Text("pubArea".to_string()), Value::Bytes(pub_area)),
         ]);
 
-        let result = verify("tpm", &stmt, &[], &[0u8; 32], &pk, &[], &[]);
+        let result = verify("tpm", &stmt, &[], &[0u8; 32], &pk, &[], &[], &[0u8; 16]);
         assert!(
             matches!(result, Err(WebAuthnError::InvalidAttestationObject(ref m)) if m.contains("type"))
         );
@@ -2526,7 +2848,16 @@ mod tests {
         ]);
 
         // auth_data = [0xAA; 10] so SHA-256(auth_data || client_data_hash) != all-zeros.
-        let result = verify("tpm", &stmt, &[0xAAu8; 10], &[0xBBu8; 32], &pk, &[], &[]);
+        let result = verify(
+            "tpm",
+            &stmt,
+            &[0xAAu8; 10],
+            &[0xBBu8; 32],
+            &pk,
+            &[],
+            &[],
+            &[0u8; 16],
+        );
         assert!(
             matches!(result, Err(WebAuthnError::InvalidAttestationObject(ref m)) if m.contains("extraData"))
         );
@@ -2580,7 +2911,16 @@ mod tests {
             (Value::Text("pubArea".to_string()), Value::Bytes(pub_area)),
         ]);
 
-        let result = verify("tpm", &stmt, auth_data, &client_data_hash, &pk, &[], &[]);
+        let result = verify(
+            "tpm",
+            &stmt,
+            auth_data,
+            &client_data_hash,
+            &pk,
+            &[],
+            &[],
+            &[0u8; 16],
+        );
         assert!(
             matches!(result, Err(WebAuthnError::InvalidAttestationObject(ref m)) if m.contains("attested.name"))
         );
@@ -2635,7 +2975,16 @@ mod tests {
             (Value::Text("pubArea".to_string()), Value::Bytes(pub_area)),
         ]);
 
-        let result = verify("tpm", &stmt, auth_data, &client_data_hash, &pk, &[], &[]);
+        let result = verify(
+            "tpm",
+            &stmt,
+            auth_data,
+            &client_data_hash,
+            &pk,
+            &[],
+            &[],
+            &[0u8; 16],
+        );
         assert!(
             matches!(result, Err(WebAuthnError::InvalidAttestationObject(ref m)) if m.contains("ES256"))
         );
@@ -2690,7 +3039,16 @@ mod tests {
             (Value::Text("pubArea".to_string()), Value::Bytes(pub_area)),
         ]);
 
-        let result = verify("tpm", &stmt, auth_data, &client_data_hash, &pk, &[], &[]);
+        let result = verify(
+            "tpm",
+            &stmt,
+            auth_data,
+            &client_data_hash,
+            &pk,
+            &[],
+            &[],
+            &[0u8; 16],
+        );
         assert!(matches!(
             result,
             Err(WebAuthnError::SignatureVerificationFailed)
@@ -2776,6 +3134,7 @@ mod tests {
             &credential_public_key,
             &[],
             &[],
+            &[0u8; 16],
         );
         assert!(matches!(result, Ok(AttestationType::Basic)));
     }
@@ -2997,6 +3356,7 @@ mod tests {
             &credential_public_key,
             &[],
             &[],
+            &[0u8; 16],
         );
         assert!(matches!(result, Ok(AttestationType::Basic)));
     }

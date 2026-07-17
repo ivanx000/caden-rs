@@ -624,6 +624,7 @@ fn verify_registration_inner(
     // self-attestation can verify the signature with the credential key.
     // Pass credential_id for fido-u2f verificationData construction.
     // Pass trust_anchors for x5c chain root verification (§7.1 step 22).
+    // Pass aaguid for the packed attestation cert extension check (§8.2.1 step 2).
     let attestation_type = attestation::verify(
         &fmt,
         &att_stmt,
@@ -632,6 +633,7 @@ fn verify_registration_inner(
         &public_key,
         &cred_data.credential_id,
         &rp.trust_anchors,
+        &cred_data.aaguid,
     )?;
 
     let backup_eligible = auth_data.flags.backup_eligible;

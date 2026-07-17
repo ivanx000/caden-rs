@@ -498,7 +498,10 @@ crate. All security-critical operations remain inside `ring`'s audited boundary.
   used to verify `sig` over `authData || clientDataHash`. The `x5c` chain order is
   verified (each cert signed by the next). Returns `AttestationType::Basic` when no
   trust anchors are configured, or `AttestationType::BasicVerified` when the chain
-  root matches a configured trust anchor.
+  root matches a configured trust anchor. If the leaf cert carries the
+  `id-fido-gen-ce-aaguid` extension (OID 1.3.6.1.4.1.45724.1.1.4), its value must
+  match `authenticatorData`'s AAGUID (§8.2.1 step 2) — see
+  `verify_cert_aaguid_extension` in `src/attestation.rs`.
 - **FIDO U2F** (`"fido-u2f"`): signature verified against the attestation cert's
   EC P-256 public key. `x5c` chain order verified. Returns `AttestationType::Basic`
   or `BasicVerified` depending on trust anchors.

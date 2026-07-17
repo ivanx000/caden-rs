@@ -151,6 +151,17 @@ pub enum WebAuthnError {
     #[error("Attestation root certificate is not trusted by any configured trust anchor")]
     AttestationRootUntrusted,
 
+    /// The attestation certificate carries the `id-fido-gen-ce-aaguid`
+    /// extension (OID 1.3.6.1.4.1.45724.1.1.4) but its value does not match
+    /// the AAGUID reported in `authenticatorData`.
+    ///
+    /// Per WebAuthn §8.2.1, when present this extension binds the certificate
+    /// to a specific authenticator model. A mismatch means the certificate was
+    /// issued for a different model than the one that produced this response —
+    /// a signal of a forged or misused attestation certificate.
+    #[error("Attestation certificate AAGUID extension does not match authenticatorData AAGUID")]
+    AttestationAaguidMismatch,
+
     /// The `credential_id` field of an [`crate::AuthenticatorAssertionResponse`] is empty.
     ///
     /// Both discoverable and non-discoverable flows require the authenticator to
