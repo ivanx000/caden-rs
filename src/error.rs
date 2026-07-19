@@ -164,6 +164,17 @@ pub enum WebAuthnError {
     #[error("Attestation certificate AAGUID extension does not match authenticatorData AAGUID")]
     AttestationAaguidMismatch,
 
+    /// The packed attestation certificate's Basic Constraints extension has
+    /// the CA component set to `true`.
+    ///
+    /// Per WebAuthn §8.2.1 (Certificate Requirements for Packed Attestation
+    /// Statements), an attestation certificate MUST have Basic Constraints
+    /// `CA:FALSE` — it must be an end-entity certificate, not one capable of
+    /// signing other certificates. A `CA:TRUE` leaf is a signal that a CA
+    /// certificate is being substituted for a genuine attestation leaf.
+    #[error("Attestation certificate is marked as a CA (Basic Constraints CA:TRUE)")]
+    AttestationCertIsCa,
+
     /// The authenticator's AAGUID is flagged with a compromised
     /// [`AuthenticatorStatus`] in the relying party's configured
     /// [`crate::RelyingParty::authenticator_metadata`].

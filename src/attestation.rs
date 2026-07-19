@@ -33,7 +33,9 @@
 //!   clientDataHash` is verified using the leaf certificate's public key, and the
 //!   full chain order is verified. If the leaf certificate carries the
 //!   `id-fido-gen-ce-aaguid` extension (OID 1.3.6.1.4.1.45724.1.1.4), its value
-//!   must match the AAGUID in authenticatorData (§8.2.1 step 2).
+//!   must match the AAGUID in authenticatorData (§8.2.1 step 2). If the leaf
+//!   certificate has a Basic Constraints extension, its CA component must not
+//!   be `true` (§8.2.1 Certificate Requirements).
 //! - **ECDAA**: deprecated and not implemented.
 
 use ciborium::value::Value;
@@ -176,6 +178,30 @@ fn verify_cert_aaguid_extension(cert_der: &[u8], aaguid: &[u8; 16]) -> Result<()
         }
     }
 
+    Ok(())
+}
+
+/// Verify that a packed attestation certificate is not itself a CA (W3C
+/// WebAuthn §8.2.1: "The Basic Constraints extension MUST have the CA
+/// component set to FALSE"). An attestation leaf that is itself a CA could be
+/// misused to mint further certificates, so a `CA:TRUE` leaf is rejected.
+///
+/// Like [`verify_cert_aaguid_extension`], this only enforces the requirement
+/// when it can be positively determined: a missing Basic Constraints
+/// extension or an unparseable certificate is treated as "nothing to check"
+/// rather than a hard failure, since many real-world attestation certificates
+/// omit the extension entirely for non-CA end-entity certs rather than
+/// including it with an explicit `CA:FALSE`.
+fn verify_cert_is_not_ca(cert_der: &[u8]) -> Result<()> {
+    let Ok((_, cert)) = X509Certificate::from_der(cert_der) else {
+        return Ok(());
+    };
+    let Ok(Some(basic_constraints)) = cert.basic_constraints() else {
+        return Ok(());
+    };
+    if basic_constraints.value.ca {
+        return Err(WebAuthnError::AttestationCertIsCa);
+    }
     Ok(())
 }
 
@@ -370,6 +396,9 @@ fn verify_packed(
         // §8.2.1 step 2: if the leaf cert carries the id-fido-gen-ce-aaguid
         // extension, its value must match authenticatorData's aaguid.
         verify_cert_aaguid_extension(&certs[0], aaguid)?;
+
+        // §8.2.1: Basic Constraints CA component must not be true when present.
+        verify_cert_is_not_ca(&certs[0])?;
 
         // §8.2 step 2.c: verify the x5c chain order and optionally the root.
         verify_x5c_chain(&certs, trust_anchors)
@@ -1524,6 +1553,95 @@ mod tests {
         // trust anchor validation is in play.
         let fake_cert = make_fake_p256_cert(&[0x04u8; 65]);
         assert!(verify_cert_aaguid_extension(&fake_cert, &[0x11u8; 16]).is_ok());
+    }
+
+    /// Build a self-signed leaf cert with an explicit Basic Constraints
+    /// extension set to `CA:FALSE` (as opposed to `make_ca()`'s `CA:TRUE`, or
+    /// the default `NoCa` which omits the extension entirely).
+    fn make_leaf_explicit_no_ca() -> Vec<u8> {
+        let key = rcgen::KeyPair::generate().expect("test setup");
+        let mut params = rcgen::CertificateParams::default();
+        params.is_ca = rcgen::IsCa::ExplicitNoCa;
+        params.self_signed(&key).expect("test setup").der().to_vec()
+    }
+
+    #[test]
+    fn cert_is_not_ca_absent_basic_constraints_passes() {
+        // Default rcgen leaf certs omit the Basic Constraints extension
+        // entirely; that must not be treated as a failure.
+        let (_key, cert_der) = make_leaf_with_aaguid_extension(&[0x11u8; 16]);
+        assert!(verify_cert_is_not_ca(&cert_der).is_ok());
+    }
+
+    #[test]
+    fn cert_is_not_ca_explicit_false_passes() {
+        let cert_der = make_leaf_explicit_no_ca();
+        assert!(verify_cert_is_not_ca(&cert_der).is_ok());
+    }
+
+    #[test]
+    fn cert_is_not_ca_rejects_ca_cert() {
+        let (_key, _cert, cert_der) = make_ca();
+        assert!(matches!(
+            verify_cert_is_not_ca(&cert_der),
+            Err(WebAuthnError::AttestationCertIsCa)
+        ));
+    }
+
+    #[test]
+    fn cert_is_not_ca_unparseable_cert_passes() {
+        let fake_cert = make_fake_p256_cert(&[0x04u8; 65]);
+        assert!(verify_cert_is_not_ca(&fake_cert).is_ok());
+    }
+
+    #[test]
+    fn packed_basic_attestation_rejects_ca_leaf_certificate() {
+        use ring::rand::SystemRandom;
+        use ring::signature::{EcdsaKeyPair, ECDSA_P256_SHA256_ASN1_SIGNING};
+
+        let (ca_key, _ca_cert, ca_der) = make_ca();
+
+        let rng = SystemRandom::new();
+        let kp = EcdsaKeyPair::from_pkcs8(
+            &ECDSA_P256_SHA256_ASN1_SIGNING,
+            ca_key.serialize_der().as_ref(),
+            &rng,
+        )
+        .expect("test setup");
+
+        let pk = dummy_es256_key();
+        let auth_data = b"fake-auth-data";
+        let client_data_hash = [0xABu8; 32];
+        let mut msg = Vec::new();
+        msg.extend_from_slice(auth_data);
+        msg.extend_from_slice(&client_data_hash);
+        let sig = kp.sign(&rng, &msg).expect("test setup");
+
+        let stmt = Value::Map(vec![
+            (
+                Value::Text("alg".to_string()),
+                Value::Integer((-7i64).into()),
+            ),
+            (
+                Value::Text("sig".to_string()),
+                Value::Bytes(sig.as_ref().to_vec()),
+            ),
+            (
+                Value::Text("x5c".to_string()),
+                Value::Array(vec![Value::Bytes(ca_der)]),
+            ),
+        ]);
+        let result = verify(
+            "packed",
+            &stmt,
+            auth_data,
+            &client_data_hash,
+            &pk,
+            &[],
+            &[],
+            &[0u8; 16],
+        );
+        assert!(matches!(result, Err(WebAuthnError::AttestationCertIsCa)));
     }
 
     #[test]

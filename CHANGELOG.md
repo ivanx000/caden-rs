@@ -34,6 +34,18 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   `verify_registration` now returns the new
   `WebAuthnError::AuthenticatorStatusUntrusted` variant.
 
+- **Packed attestation cert Basic Constraints check** (W3C §8.2.1 Certificate
+  Requirements for Packed Attestation Statements) — a `"packed"`
+  basic-attestation leaf certificate whose Basic Constraints extension has
+  the CA component set to `true` is now rejected with the new
+  `WebAuthnError::AttestationCertIsCa` variant. A CA-capable leaf is a signal
+  that a CA certificate is being substituted for a genuine attestation
+  leaf. As with the AAGUID extension check, this is only enforced when the
+  extension is present and parseable — many real-world attestation
+  certificates omit Basic Constraints entirely for non-CA end-entity certs
+  rather than including it with an explicit `CA:FALSE`, so an absent
+  extension is not treated as a failure.
+
 ---
 
 ## [0.9.0] — 2026-07-14

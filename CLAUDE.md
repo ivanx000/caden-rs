@@ -502,7 +502,12 @@ crate. All security-critical operations remain inside `ring`'s audited boundary.
   root matches a configured trust anchor. If the leaf cert carries the
   `id-fido-gen-ce-aaguid` extension (OID 1.3.6.1.4.1.45724.1.1.4), its value must
   match `authenticatorData`'s AAGUID (§8.2.1 step 2) — see
-  `verify_cert_aaguid_extension` in `src/attestation.rs`.
+  `verify_cert_aaguid_extension` in `src/attestation.rs`. If the leaf cert has a
+  Basic Constraints extension, its CA component must not be `true` (§8.2.1
+  Certificate Requirements) — see `verify_cert_is_not_ca`. Both checks are
+  skipped (not failed) when the extension is absent or the cert doesn't parse
+  as DER, since real-world attestation certs vary in how strictly they follow
+  the certificate profile.
 - **FIDO U2F** (`"fido-u2f"`): signature verified against the attestation cert's
   EC P-256 public key. `x5c` chain order verified. Returns `AttestationType::Basic`
   or `BasicVerified` depending on trust anchors.
