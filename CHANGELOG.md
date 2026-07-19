@@ -19,6 +19,21 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   mismatch returns the new `WebAuthnError::AttestationAaguidMismatch`
   variant.
 
+- **FIDO Metadata Service (MDS) status consumption** (W3C §14.4) — new
+  `src/metadata.rs` module with an `AuthenticatorStatus` enum mirroring the
+  FIDO Alliance MDS `AuthenticatorStatus` values, plus
+  `RelyingParty::authenticator_metadata` for supplying per-AAGUID status
+  lists. `caden` does not fetch or parse the MDS BLOB itself (that requires
+  network access and JWS verification, which conflicts with the library's
+  stateless, I/O-free design) — the caller fetches and verifies the BLOB
+  out-of-band and passes the resulting statuses in. When a registering
+  authenticator's AAGUID has an entry containing a status for which
+  `AuthenticatorStatus::is_compromised()` is `true` (`Revoked`,
+  `AttestationKeyCompromise`, `UserKeyRemoteCompromise`,
+  `UserKeyPhysicalCompromise`, `UserVerificationBypass`),
+  `verify_registration` now returns the new
+  `WebAuthnError::AuthenticatorStatusUntrusted` variant.
+
 ---
 
 ## [0.9.0] — 2026-07-14

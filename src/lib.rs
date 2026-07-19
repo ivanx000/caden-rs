@@ -125,6 +125,7 @@ pub mod crypto;
 pub mod der;
 pub mod error;
 pub mod extensions;
+pub mod metadata;
 pub mod options;
 
 mod authentication;
@@ -142,6 +143,7 @@ pub use credential::{
 pub use crypto::{generate_challenge, random_bytes, rsa_components_to_der, sha256};
 pub use error::{Result, WebAuthnError};
 pub use extensions::{CredProps, ExtensionView, PrfExtension, PrfValues};
+pub use metadata::AuthenticatorStatus;
 pub use options::{
     AttestationPreference, AuthenticationOptions, AuthenticatorAttachment, AuthenticatorSelection,
     AuthenticatorTransport, PublicKeyCredentialDescriptor, RegistrationOptions,

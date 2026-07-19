@@ -51,6 +51,7 @@ The library follows the [W3C WebAuthn Level 3 specification](https://www.w3.org/
 | `src/authenticator_data.rs` | Binary authenticator data → `AuthenticatorData`; `CoseKey` enum |
 | `src/attestation.rs` | Attestation verification: "none", "packed", "fido-u2f", "android-key", "apple", "tpm" |
 | `src/extensions.rs` | Typed extension accessors: `ExtensionView`, `CredProps`, `PrfExtension`, `PrfValues` |
+| `src/metadata.rs` | FIDO MDS status consumption: `AuthenticatorStatus` enum + `is_compromised()` |
 | `src/options.rs` | Registration/authentication options: `RegistrationOptions`, `AuthenticationOptions`, `UserEntity`, `AuthenticatorSelection`, and supporting enums |
 | `src/registration.rs` | §7.1 registration ceremony; dispatches `CoseKey` → `PublicKey`; `begin_registration` options builder |
 | `src/authentication.rs` | §7.2 authentication ceremony; dispatches `PublicKey` → verifier |
@@ -285,8 +286,8 @@ Canonical spec: https://www.w3.org/TR/webauthn-3/
 
 | Limitation | Notes |
 |------------|-------|
-| Cert chain trust anchors (all formats) | `x5c` chain order is verified; root checked against `RelyingParty::trust_anchors` when configured, otherwise accepted as `Basic`. No FIDO MDS integration — authenticator model/provenance cannot be verified. |
-| No FIDO Metadata Service | Authenticator model/provenance cannot be verified |
+| Cert chain trust anchors (all formats) | `x5c` chain order is verified; root checked against `RelyingParty::trust_anchors` when configured, otherwise accepted as `Basic`. |
+| FIDO Metadata Service — no BLOB fetch/parse | `RelyingParty::authenticator_metadata` consumes caller-supplied, pre-parsed per-AAGUID status data and rejects compromised/revoked models (see `src/metadata.rs`), but `caden` does not fetch the MDS BLOB or verify its JWS signature itself — that remains the caller's responsibility, by design (stateless, no network I/O). |
 | UV flag optional | Off by default; enable with `RelyingParty::new(...).require_user_verification(true)` |
 
 Challenge single-use enforcement is now opt-in via `RelyingParty::enforce_single_use_challenges(true)`. When enabled, the library maintains an `Arc<Mutex<HashSet<Vec<u8>>>>` of consumed challenge bytes shared across all clones of the instance. Without this opt-in, the caller is responsible for deleting each challenge from their session store after it is used.

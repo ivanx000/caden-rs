@@ -5,6 +5,8 @@
 
 use thiserror::Error;
 
+use crate::metadata::AuthenticatorStatus;
+
 /// All errors that can be returned by WebAuthn ceremony verification.
 #[derive(Debug, Error)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -161,6 +163,17 @@ pub enum WebAuthnError {
     /// a signal of a forged or misused attestation certificate.
     #[error("Attestation certificate AAGUID extension does not match authenticatorData AAGUID")]
     AttestationAaguidMismatch,
+
+    /// The authenticator's AAGUID is flagged with a compromised
+    /// [`AuthenticatorStatus`] in the relying party's configured
+    /// [`crate::RelyingParty::authenticator_metadata`].
+    ///
+    /// Per WebAuthn §14.4 (Metadata Service Considerations), a relying party
+    /// should consult the FIDO Metadata Service and refuse new registrations
+    /// from authenticator models known to be compromised, revoked, or capable
+    /// of bypassing user verification.
+    #[error("Authenticator model is untrusted: FIDO MDS status {0}")]
+    AuthenticatorStatusUntrusted(AuthenticatorStatus),
 
     /// The `credential_id` field of an [`crate::AuthenticatorAssertionResponse`] is empty.
     ///

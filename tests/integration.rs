@@ -13,8 +13,8 @@ use ring::rand::SystemRandom;
 use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_ASN1_SIGNING};
 
 use webauthn::{
-    AuthenticatorAssertionResponse, AuthenticatorAttestationResponse, Challenge, RelyingParty,
-    WebAuthnError,
+    AuthenticatorAssertionResponse, AuthenticatorAttestationResponse, AuthenticatorStatus,
+    Challenge, RelyingParty, WebAuthnError,
 };
 
 // ─── Shared constants ─────────────────────────────────────────────────────────
@@ -2612,6 +2612,83 @@ fn multi_origin_relying_party_accepts_registered_origin() {
         0x41, // UP + AT flags
         1,
     );
+    rp.verify_registration(&challenge, &response, b"test-user")
+        .unwrap();
+}
+
+// ─── FIDO Metadata Service tests ──────────────────────────────────────────────
+
+#[test]
+fn default_rp_ignores_unconfigured_authenticator_metadata() {
+    let rp = RelyingParty::new(RP_ID, ORIGIN, "Test RP");
+    let fixture = Fixture::new();
+    let challenge = Challenge::new().unwrap();
+    let response = fixture.make_registration_response(&challenge.bytes, ORIGIN, RP_ID, 0x41, 1);
+    rp.verify_registration(&challenge, &response, b"test-user")
+        .unwrap();
+}
+
+#[test]
+fn authenticator_metadata_accepts_uncompromised_status() {
+    // Fixture-generated authenticator data always reports the all-zero AAGUID.
+    let aaguid = [0u8; 16];
+    let rp = RelyingParty::new(RP_ID, ORIGIN, "Test RP")
+        .authenticator_metadata([(aaguid, vec![AuthenticatorStatus::FidoCertifiedL1])]);
+    let fixture = Fixture::new();
+    let challenge = Challenge::new().unwrap();
+    let response = fixture.make_registration_response(&challenge.bytes, ORIGIN, RP_ID, 0x41, 1);
+    rp.verify_registration(&challenge, &response, b"test-user")
+        .unwrap();
+}
+
+#[test]
+fn authenticator_metadata_rejects_revoked_status() {
+    let aaguid = [0u8; 16];
+    let rp = RelyingParty::new(RP_ID, ORIGIN, "Test RP")
+        .authenticator_metadata([(aaguid, vec![AuthenticatorStatus::Revoked])]);
+    let fixture = Fixture::new();
+    let challenge = Challenge::new().unwrap();
+    let response = fixture.make_registration_response(&challenge.bytes, ORIGIN, RP_ID, 0x41, 1);
+    let err = rp
+        .verify_registration(&challenge, &response, b"test-user")
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        WebAuthnError::AuthenticatorStatusUntrusted(AuthenticatorStatus::Revoked)
+    ));
+}
+
+#[test]
+fn authenticator_metadata_rejects_when_compromise_mixed_with_certification_status() {
+    let aaguid = [0u8; 16];
+    let rp = RelyingParty::new(RP_ID, ORIGIN, "Test RP").authenticator_metadata([(
+        aaguid,
+        vec![
+            AuthenticatorStatus::FidoCertifiedL1,
+            AuthenticatorStatus::AttestationKeyCompromise,
+        ],
+    )]);
+    let fixture = Fixture::new();
+    let challenge = Challenge::new().unwrap();
+    let response = fixture.make_registration_response(&challenge.bytes, ORIGIN, RP_ID, 0x41, 1);
+    let err = rp
+        .verify_registration(&challenge, &response, b"test-user")
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        WebAuthnError::AuthenticatorStatusUntrusted(AuthenticatorStatus::AttestationKeyCompromise)
+    ));
+}
+
+#[test]
+fn authenticator_metadata_for_other_aaguid_does_not_affect_registration() {
+    // Entry keyed to a different AAGUID than the one the fixture reports.
+    let other_aaguid = [0xFFu8; 16];
+    let rp = RelyingParty::new(RP_ID, ORIGIN, "Test RP")
+        .authenticator_metadata([(other_aaguid, vec![AuthenticatorStatus::Revoked])]);
+    let fixture = Fixture::new();
+    let challenge = Challenge::new().unwrap();
+    let response = fixture.make_registration_response(&challenge.bytes, ORIGIN, RP_ID, 0x41, 1);
     rp.verify_registration(&challenge, &response, b"test-user")
         .unwrap();
 }

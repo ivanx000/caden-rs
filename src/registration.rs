@@ -10,7 +10,7 @@
 //! Spec: <https://www.w3.org/TR/webauthn-2/#sctn-registering-a-new-credential>
 
 use ciborium::value::Value;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
@@ -24,6 +24,7 @@ use crate::credential::{
 };
 use crate::crypto::sha256;
 use crate::error::{Result, WebAuthnError};
+use crate::metadata::AuthenticatorStatus;
 use crate::options::{
     AttestationPreference, AuthenticatorSelection, PublicKeyCredentialDescriptor,
     RegistrationOptions, UserEntity,
@@ -152,6 +153,21 @@ pub struct RelyingParty {
     /// JSON sent to the browser. Set via
     /// [`RelyingParty::default_authenticator_selection`].
     pub default_authenticator_selection: Option<AuthenticatorSelection>,
+
+    /// Per-AAGUID FIDO Metadata Service status data, keyed by the
+    /// authenticator's AAGUID.
+    ///
+    /// `caden` does not fetch or parse the MDS BLOB itself (see
+    /// [`crate::metadata`]); the caller supplies pre-parsed status lists here.
+    /// When an incoming registration's AAGUID has an entry containing a
+    /// status for which [`AuthenticatorStatus::is_compromised`] is `true`,
+    /// `verify_registration` returns
+    /// [`crate::error::WebAuthnError::AuthenticatorStatusUntrusted`]. Empty
+    /// (the default) performs no MDS check.
+    ///
+    /// Use [`RelyingParty::authenticator_metadata`] to set this at
+    /// construction time.
+    pub authenticator_metadata: HashMap<[u8; 16], Vec<AuthenticatorStatus>>,
 }
 
 impl RelyingParty {
@@ -174,6 +190,7 @@ impl RelyingParty {
             trust_anchors: vec![],
             used_challenges: None,
             default_authenticator_selection: None,
+            authenticator_metadata: HashMap::new(),
         }
     }
 
@@ -205,6 +222,7 @@ impl RelyingParty {
             trust_anchors: vec![],
             used_challenges: None,
             default_authenticator_selection: None,
+            authenticator_metadata: HashMap::new(),
         }
     }
 
@@ -325,6 +343,34 @@ impl RelyingParty {
     /// ```
     pub fn trust_anchors(mut self, roots: impl IntoIterator<Item = Vec<u8>>) -> Self {
         self.trust_anchors = roots.into_iter().collect();
+        self
+    }
+
+    /// Provide per-AAGUID FIDO Metadata Service status data (§14.4).
+    ///
+    /// `caden` does not fetch or parse the MDS BLOB itself — that requires
+    /// network access and JWS verification, which is out of scope for a
+    /// stateless library. Fetch and verify the BLOB out-of-band, then pass
+    /// the per-authenticator status lists here. When a registering
+    /// authenticator's AAGUID has an entry containing a status for which
+    /// [`AuthenticatorStatus::is_compromised`] is `true`,
+    /// `verify_registration` returns
+    /// [`crate::error::WebAuthnError::AuthenticatorStatusUntrusted`].
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use webauthn::{AuthenticatorStatus, RelyingParty};
+    ///
+    /// let compromised_aaguid = [0u8; 16]; // from your MDS BLOB
+    /// let rp = RelyingParty::new("example.com", "https://example.com", "My Service")
+    ///     .authenticator_metadata([(compromised_aaguid, vec![AuthenticatorStatus::Revoked])]);
+    /// ```
+    pub fn authenticator_metadata(
+        mut self,
+        entries: impl IntoIterator<Item = ([u8; 16], Vec<AuthenticatorStatus>)>,
+    ) -> Self {
+        self.authenticator_metadata = entries.into_iter().collect();
         self
     }
 
@@ -590,6 +636,15 @@ fn verify_registration_inner(
             "attested credential data (AT flag) is required for registration".to_string(),
         )
     })?;
+
+    // ── §14.4 (Metadata Service Considerations) ─────────────────────────────────
+    // Reject registrations from authenticator models the caller has flagged as
+    // compromised via FIDO MDS status data (RelyingParty::authenticator_metadata).
+    if let Some(statuses) = rp.authenticator_metadata.get(&cred_data.aaguid) {
+        if let Some(status) = statuses.iter().find(|s| s.is_compromised()) {
+            return Err(WebAuthnError::AuthenticatorStatusUntrusted(*status));
+        }
+    }
 
     // ── §7.1 step 17 ──────────────────────────────────────────────────────────
     // Extract the COSE public key and convert it to a typed PublicKey.
