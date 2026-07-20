@@ -143,7 +143,7 @@ pub use credential::{
 pub use crypto::{generate_challenge, random_bytes, rsa_components_to_der, sha256};
 pub use error::{Result, WebAuthnError};
 pub use extensions::{CredProps, ExtensionView, PrfExtension, PrfValues};
-pub use metadata::AuthenticatorStatus;
+pub use metadata::{verify_and_parse_mds_blob, AuthenticatorStatus};
 pub use options::{
     AttestationPreference, AuthenticationOptions, AuthenticatorAttachment, AuthenticatorSelection,
     AuthenticatorTransport, PublicKeyCredentialDescriptor, RegistrationOptions,

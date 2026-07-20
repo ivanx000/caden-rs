@@ -194,6 +194,44 @@ pub enum WebAuthnError {
     /// [`crate::RelyingParty::begin_authentication`].
     #[error("Missing credential ID: response.credential_id must not be empty")]
     MissingCredentialId,
+
+    /// The FIDO MDS BLOB passed to
+    /// [`crate::metadata::verify_and_parse_mds_blob`] is not well-formed: it
+    /// does not have the 3-segment JWT Compact Serialization structure, a
+    /// segment is not valid base64(url), the JOSE header or payload is not
+    /// valid JSON, or a required field (`alg`, `x5c`) is missing or wrong.
+    ///
+    /// The inner string identifies which part of the BLOB failed to parse,
+    /// without echoing untrusted BLOB content back verbatim.
+    #[error("Malformed FIDO MDS BLOB: {0}")]
+    MdsBlobMalformed(String),
+
+    /// The `x5c` certificate chain in the FIDO MDS BLOB's JOSE header is
+    /// structurally invalid: a certificate in the chain is not signed by the
+    /// next certificate, or the DER encoding is malformed.
+    ///
+    /// The inner string identifies which link in the chain failed and why.
+    #[error("FIDO MDS BLOB signer certificate chain invalid: {0}")]
+    MdsChainInvalid(String),
+
+    /// The FIDO MDS BLOB's `x5c` chain is structurally valid, but its root
+    /// certificate is not signed by the caller-supplied trust anchor.
+    ///
+    /// Unlike attestation trust anchors (which are optional — an unanchored
+    /// chain still yields [`AttestationType::Basic`](crate::credential::AttestationType::Basic)),
+    /// the MDS trust root is mandatory: an unrooted MDS BLOB cannot be
+    /// trusted to report accurate authenticator status, so there is no
+    /// unverified fallback.
+    #[error("FIDO MDS BLOB signer root certificate is not trusted by the supplied trust anchor")]
+    MdsRootUntrusted,
+
+    /// The ES256 signature over the FIDO MDS BLOB's `header.payload` does not
+    /// verify against the `x5c[0]` leaf certificate's public key.
+    ///
+    /// The BLOB was either tampered with or signed by a key that does not
+    /// correspond to the presented certificate chain.
+    #[error("FIDO MDS BLOB signature verification failed")]
+    MdsSignatureInvalid,
 }
 
 /// Convenience alias so callers write `webauthn::Result<T>`.

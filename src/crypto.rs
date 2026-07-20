@@ -62,6 +62,35 @@ pub fn verify_es256(
         .map_err(|_| WebAuthnError::SignatureVerificationFailed)
 }
 
+/// Verify an ES256 signature in JWS "fixed" (raw `r || s`) encoding.
+///
+/// JWS Compact Serialization (RFC 7518 §3.4) signs with a fixed-length raw
+/// concatenation of `r` and `s`, unlike the DER/ASN.1 encoding WebAuthn
+/// authenticators produce for attestation and assertion signatures (see
+/// [`verify_es256`]). Mixing the two up is a common interop bug — this
+/// function exists specifically for JWS callers (`crate::metadata`'s FIDO MDS
+/// BLOB signature check); WebAuthn ceremony code should keep using
+/// [`verify_es256`].
+///
+/// # Arguments
+/// * `public_key_uncompressed` — 65-byte uncompressed P-256 point:
+///   `0x04 || x (32 bytes) || y (32 bytes)`.
+/// * `message`   — the raw signing input (ring hashes internally via SHA-256).
+/// * `signature` — 64-byte raw `r (32 bytes) || s (32 bytes)` signature.
+///
+/// # Errors
+/// Returns [`WebAuthnError::SignatureVerificationFailed`] if the signature is
+/// invalid, the key is malformed, or the public key does not match.
+pub fn verify_es256_jws(
+    public_key_uncompressed: &[u8],
+    message: &[u8],
+    signature: &[u8],
+) -> Result<()> {
+    let key = UnparsedPublicKey::new(&signature::ECDSA_P256_SHA256_FIXED, public_key_uncompressed);
+    key.verify(message, signature)
+        .map_err(|_| WebAuthnError::SignatureVerificationFailed)
+}
+
 /// Verify an ES384 (ECDSA P-384 + SHA-384) signature.
 ///
 /// # Arguments
@@ -238,6 +267,71 @@ mod tests {
 
         let err =
             verify_es256(pk, b"hello", &[0xDE, 0xAD, 0xBE, 0xEF]).expect_err("expected error");
+        assert!(matches!(err, WebAuthnError::SignatureVerificationFailed));
+    }
+
+    // ── verify_es256_jws ─────────────────────────────────────────────────────
+
+    #[test]
+    fn verify_es256_jws_accepts_valid_raw_signature() {
+        use ring::rand::SystemRandom;
+        use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_FIXED_SIGNING};
+
+        let rng = SystemRandom::new();
+        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &rng)
+            .expect("test setup");
+        let kp = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, pkcs8.as_ref(), &rng)
+            .expect("test setup");
+        let pk = kp.public_key().as_ref();
+
+        let msg = b"header.payload";
+        let sig = kp.sign(&rng, msg).expect("test setup");
+        assert_eq!(sig.as_ref().len(), 64, "fixed ES256 signature is 64 bytes");
+        verify_es256_jws(pk, msg, sig.as_ref()).expect("valid raw ES256 signature should verify");
+    }
+
+    #[test]
+    fn verify_es256_jws_rejects_der_encoded_signature() {
+        // A DER/ASN.1 signature (the WebAuthn wire format) must not verify
+        // against the JWS raw-format verifier — this is the exact mix-up
+        // verify_es256_jws exists to avoid.
+        use ring::rand::SystemRandom;
+        use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_ASN1_SIGNING};
+
+        let rng = SystemRandom::new();
+        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng)
+            .expect("test setup");
+        let kp = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, pkcs8.as_ref(), &rng)
+            .expect("test setup");
+        let pk = kp.public_key().as_ref();
+
+        let msg = b"header.payload";
+        let der_sig = kp.sign(&rng, msg).expect("test setup");
+        let err = verify_es256_jws(pk, msg, der_sig.as_ref()).expect_err("expected error");
+        assert!(matches!(err, WebAuthnError::SignatureVerificationFailed));
+    }
+
+    #[test]
+    fn verify_es256_jws_rejects_wrong_message() {
+        use ring::rand::SystemRandom;
+        use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_FIXED_SIGNING};
+
+        let rng = SystemRandom::new();
+        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &rng)
+            .expect("test setup");
+        let kp = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, pkcs8.as_ref(), &rng)
+            .expect("test setup");
+        let pk = kp.public_key().as_ref();
+
+        let sig = kp.sign(&rng, b"message A").expect("test setup");
+        let err = verify_es256_jws(pk, b"message B", sig.as_ref()).expect_err("expected error");
+        assert!(matches!(err, WebAuthnError::SignatureVerificationFailed));
+    }
+
+    #[test]
+    fn verify_es256_jws_rejects_empty_signature() {
+        let key = vec![0x04u8; 65];
+        let err = verify_es256_jws(&key, b"hello", &[]).expect_err("expected error");
         assert!(matches!(err, WebAuthnError::SignatureVerificationFailed));
     }
 

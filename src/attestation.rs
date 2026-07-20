@@ -76,11 +76,66 @@ fn extract_x5c_array(v: &Value) -> Result<Vec<Vec<u8>>> {
         .collect()
 }
 
+/// Verify that each certificate in `certs` (leaf-first order) is signed by the
+/// next certificate in the slice. The issuer DN of cert `i` must equal the
+/// subject DN of cert `i+1`. Chains of length 0 or 1 trivially satisfy this
+/// (nothing to verify).
+///
+/// Shared by attestation `x5c` chain validation ([`verify_x5c_chain`]) and
+/// FIDO MDS BLOB signer chain validation (`crate::metadata`, FIDO MDS3 §3.2) —
+/// both walk a leaf-first DER certificate chain the same way, differing only
+/// in which [`WebAuthnError`] variant a broken link should produce.
+pub(crate) fn verify_chain_order(
+    certs: &[Vec<u8>],
+    invalid_err: impl Fn(String) -> WebAuthnError,
+) -> Result<()> {
+    for i in 0..certs.len().saturating_sub(1) {
+        let (_, subject) = X509Certificate::from_der(&certs[i]).map_err(|_| {
+            invalid_err(format!(
+                "x5c[{i}] is not a valid DER-encoded X.509 certificate"
+            ))
+        })?;
+        let (_, issuer) = X509Certificate::from_der(&certs[i + 1]).map_err(|_| {
+            invalid_err(format!(
+                "x5c[{}] is not a valid DER-encoded X.509 certificate",
+                i + 1
+            ))
+        })?;
+
+        if subject.issuer() != issuer.subject() {
+            return Err(invalid_err(format!(
+                "x5c[{i}].issuer does not match x5c[{}].subject",
+                i + 1
+            )));
+        }
+
+        subject
+            .verify_signature(Some(issuer.public_key()))
+            .map_err(|_| invalid_err(format!("x5c[{i}] is not signed by x5c[{}]", i + 1)))?;
+    }
+    Ok(())
+}
+
+/// Whether `cert_der` is signed by `signer_der`. Returns `false` — not an
+/// error — if either certificate fails to parse as DER; callers treat
+/// unparseable input the same as "not trusted".
+///
+/// Shared by attestation root-of-trust checks and FIDO MDS BLOB signer root
+/// checks.
+pub(crate) fn cert_signed_by(cert_der: &[u8], signer_der: &[u8]) -> bool {
+    let (Ok((_, cert)), Ok((_, signer))) = (
+        X509Certificate::from_der(cert_der),
+        X509Certificate::from_der(signer_der),
+    ) else {
+        return false;
+    };
+    cert.verify_signature(Some(signer.public_key())).is_ok()
+}
+
 /// Verify the `x5c` certificate chain order and optionally anchor the root.
 ///
 /// Chain order: cert `i` must be signed by cert `i+1` (leaf-first ordering per
-/// the WebAuthn spec). The issuer DN of cert `i` must equal the subject DN of
-/// cert `i+1`.
+/// the WebAuthn spec).
 ///
 /// Root check: when `trust_anchors` is non-empty the root certificate (the last
 /// entry in `certs`) must be signed by one of the provided DER-encoded anchor
@@ -91,35 +146,7 @@ fn extract_x5c_array(v: &Value) -> Result<Vec<Vec<u8>>> {
 /// accepted unconditionally and [`AttestationType::Basic`] is returned.
 fn verify_x5c_chain(certs: &[Vec<u8>], trust_anchors: &[Vec<u8>]) -> Result<AttestationType> {
     // §7.1 step 22 — verify chain order (leaf-first).
-    for i in 0..certs.len().saturating_sub(1) {
-        let (_, subject) = X509Certificate::from_der(&certs[i]).map_err(|_| {
-            WebAuthnError::AttestationChainInvalid(format!(
-                "x5c[{i}] is not a valid DER-encoded X.509 certificate"
-            ))
-        })?;
-        let (_, issuer) = X509Certificate::from_der(&certs[i + 1]).map_err(|_| {
-            WebAuthnError::AttestationChainInvalid(format!(
-                "x5c[{}] is not a valid DER-encoded X.509 certificate",
-                i + 1
-            ))
-        })?;
-
-        if subject.issuer() != issuer.subject() {
-            return Err(WebAuthnError::AttestationChainInvalid(format!(
-                "x5c[{i}].issuer does not match x5c[{}].subject",
-                i + 1
-            )));
-        }
-
-        subject
-            .verify_signature(Some(issuer.public_key()))
-            .map_err(|_| {
-                WebAuthnError::AttestationChainInvalid(format!(
-                    "x5c[{i}] is not signed by x5c[{}]",
-                    i + 1
-                ))
-            })?;
-    }
+    verify_chain_order(certs, WebAuthnError::AttestationChainInvalid)?;
 
     if trust_anchors.is_empty() {
         return Ok(AttestationType::Basic);
@@ -127,15 +154,14 @@ fn verify_x5c_chain(certs: &[Vec<u8>], trust_anchors: &[Vec<u8>]) -> Result<Atte
 
     // §7.1 step 22 — verify the chain root against configured trust anchors.
     let root_der = &certs[certs.len() - 1];
-    let (_, root) = X509Certificate::from_der(root_der).map_err(|_| {
-        WebAuthnError::AttestationChainInvalid("x5c root certificate is not valid DER".to_string())
-    })?;
+    if X509Certificate::from_der(root_der).is_err() {
+        return Err(WebAuthnError::AttestationChainInvalid(
+            "x5c root certificate is not valid DER".to_string(),
+        ));
+    }
 
     for anchor_der in trust_anchors {
-        let Ok((_, anchor)) = X509Certificate::from_der(anchor_der) else {
-            continue;
-        };
-        if root.verify_signature(Some(anchor.public_key())).is_ok() {
+        if cert_signed_by(root_der, anchor_der) {
             return Ok(AttestationType::BasicVerified);
         }
     }
@@ -1381,7 +1407,10 @@ fn der_unwrap_octet_string(data: &[u8]) -> Option<&[u8]> {
 /// FIDO U2F attestation certificates always use EC P-256 with an uncompressed
 /// point, so the SubjectPublicKeyInfo has a fixed 27-byte header that can be
 /// located by byte search rather than a full ASN.1 parser.
-fn extract_ec_p256_public_key_from_cert(cert_der: &[u8]) -> Result<Vec<u8>> {
+///
+/// `pub(crate)` so `crate::metadata` can reuse it to extract the FIDO MDS BLOB
+/// signer's public key from its `x5c[0]` leaf certificate.
+pub(crate) fn extract_ec_p256_public_key_from_cert(cert_der: &[u8]) -> Result<Vec<u8>> {
     // SubjectPublicKeyInfo for EC P-256 (uncompressed point) has a fixed structure.
     // Bytes up to and including the 0x04 uncompressed-point prefix:
     //   30 59          SEQUENCE (89 bytes)

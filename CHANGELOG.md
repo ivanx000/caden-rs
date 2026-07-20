@@ -9,6 +9,27 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- **FIDO Metadata Service (MDS) BLOB verification and parsing** (FIDO MDS3
+  §3.2, §3.3) — new `metadata::verify_and_parse_mds_blob(blob, trust_root)`
+  verifies and parses the MDS BLOB JWT so callers only need to perform the
+  HTTP GET (e.g. from `https://mds3.fidoalliance.org/`), rather than
+  implementing JWS verification themselves. It splits the JWT Compact
+  Serialization, verifies the `x5c` certificate chain order and roots it
+  against a caller-supplied trust anchor, verifies the ES256 signature (JWS
+  raw `r || s` encoding per RFC 7518 §3.4 — distinct from the DER encoding
+  WebAuthn ceremony signatures use, now available as
+  `crypto::verify_es256_jws`), and parses `entries[].aaguid` /
+  `entries[].statusReports[].status` into a
+  `HashMap<[u8; 16], Vec<AuthenticatorStatus>>` ready for
+  `RelyingParty::authenticator_metadata`. An entry with an unrecognized
+  status string (MDS is expected to evolve) has that status skipped without
+  dropping the entry or failing the whole BLOB. Four new `WebAuthnError`
+  variants support this: `MdsBlobMalformed`, `MdsChainInvalid`,
+  `MdsRootUntrusted`, `MdsSignatureInvalid`. The `x5c` chain-order and
+  root-of-trust logic is now shared between attestation verification and MDS
+  BLOB verification via `attestation::verify_chain_order` and
+  `attestation::cert_signed_by`.
+
 - **Packed attestation AAGUID certificate binding** (W3C §8.2.1 step 2) — when
   a `"packed"` basic-attestation leaf certificate carries the
   `id-fido-gen-ce-aaguid` X.509 extension (OID `1.3.6.1.4.1.45724.1.1.4`), its
