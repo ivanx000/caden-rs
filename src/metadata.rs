@@ -18,14 +18,10 @@
 
 use std::collections::HashMap;
 
-use base64::{
-    engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
-    Engine as _,
-};
 use serde::Deserialize;
 
 use crate::attestation::{
-    cert_signed_by, extract_ec_p256_public_key_from_cert, verify_chain_order,
+    cert_signed_by, extract_ec_p256_public_key_from_cert, split_jws_with_x5c, verify_chain_order,
 };
 use crate::crypto::verify_es256_jws;
 use crate::error::{Result, WebAuthnError};
@@ -133,15 +129,6 @@ impl std::fmt::Display for AuthenticatorStatus {
     }
 }
 
-/// FIDO MDS3 §3.2 — JOSE header of the MDS BLOB's JWT Compact Serialization.
-/// Only the fields needed to verify the signature are modeled.
-#[derive(Deserialize)]
-struct MdsJoseHeader {
-    alg: String,
-    #[serde(default)]
-    x5c: Vec<String>,
-}
-
 /// FIDO MDS3 §3.3 — `MetadataBLOBPayload`. Only `entries` is modeled; the
 /// large surrounding schema (`legalHeader`, `no`, `nextUpdate`, etc.) is out
 /// of scope for this library.
@@ -216,76 +203,38 @@ pub fn verify_and_parse_mds_blob(
     blob: &str,
     trust_root: &[u8],
 ) -> Result<HashMap<[u8; 16], Vec<AuthenticatorStatus>>> {
-    // FIDO MDS3 §3.2 — the BLOB is a JWT in Compact Serialization:
-    // b64url(header) "." b64url(payload) "." b64url(signature).
-    let segments: Vec<&str> = blob.split('.').collect();
-    let [header_b64, payload_b64, sig_b64] = segments[..] else {
-        return Err(WebAuthnError::MdsBlobMalformed(format!(
-            "expected 3 dot-separated JWT segments, got {}",
-            segments.len()
-        )));
-    };
-
-    let header_bytes = URL_SAFE_NO_PAD.decode(header_b64).map_err(|e| {
-        WebAuthnError::MdsBlobMalformed(format!("failed to base64url-decode JOSE header: {e}"))
-    })?;
-    let payload_bytes = URL_SAFE_NO_PAD.decode(payload_b64).map_err(|e| {
-        WebAuthnError::MdsBlobMalformed(format!("failed to base64url-decode payload: {e}"))
-    })?;
-    let signature = URL_SAFE_NO_PAD.decode(sig_b64).map_err(|e| {
-        WebAuthnError::MdsBlobMalformed(format!("failed to base64url-decode signature: {e}"))
-    })?;
-
-    let header: MdsJoseHeader = serde_json::from_slice(&header_bytes).map_err(|e| {
-        WebAuthnError::MdsBlobMalformed(format!("failed to parse JOSE header JSON: {e}"))
-    })?;
+    // FIDO MDS3 §3.2 — the BLOB is a JWT in Compact Serialization; split it
+    // and decode its JOSE header's x5c chain.
+    let jws = split_jws_with_x5c(blob, WebAuthnError::MdsBlobMalformed)?;
 
     // FIDO MDS3 §3.2 mandates ES256; this is the only alg this library verifies.
-    if header.alg != "ES256" {
+    if jws.alg != "ES256" {
         return Err(WebAuthnError::MdsBlobMalformed(format!(
             "unsupported JWS alg \"{}\", expected \"ES256\"",
-            header.alg
+            jws.alg
         )));
     }
-    if header.x5c.is_empty() {
-        return Err(WebAuthnError::MdsBlobMalformed(
-            "JOSE header x5c must be a non-empty certificate chain".to_string(),
-        ));
-    }
-
-    // RFC 7515 §4.1.6 — x5c entries are standard (padded) base64, NOT
-    // base64url, unlike the header/payload/signature segments themselves.
-    let certs: Vec<Vec<u8>> = header
-        .x5c
-        .iter()
-        .enumerate()
-        .map(|(i, entry)| {
-            STANDARD.decode(entry).map_err(|e| {
-                WebAuthnError::MdsBlobMalformed(format!("failed to base64-decode x5c[{i}]: {e}"))
-            })
-        })
-        .collect::<Result<_>>()?;
 
     // FIDO MDS3 §3.2 — verify the x5c chain order and that the root is signed
     // by the caller-supplied trust anchor (mandatory — see MdsRootUntrusted).
-    verify_chain_order(&certs, WebAuthnError::MdsChainInvalid)?;
-    let root_der = certs
+    verify_chain_order(&jws.certs, WebAuthnError::MdsChainInvalid)?;
+    let root_der = jws
+        .certs
         .last()
-        .expect("certs is non-empty: header.x5c was checked non-empty above");
+        .expect("certs is non-empty: split_jws_with_x5c rejects an empty x5c");
     if !cert_signed_by(root_der, trust_root) {
         return Err(WebAuthnError::MdsRootUntrusted);
     }
 
     // FIDO MDS3 §3.2 — verify the ES256 signature (JWS raw r||s encoding)
     // over `b64url(header) || "." || b64url(payload)` using x5c[0]'s key.
-    let signing_input = format!("{header_b64}.{payload_b64}");
-    let leaf_pk = extract_ec_p256_public_key_from_cert(&certs[0])?;
-    verify_es256_jws(&leaf_pk, signing_input.as_bytes(), &signature)
+    let leaf_pk = extract_ec_p256_public_key_from_cert(&jws.certs[0])?;
+    verify_es256_jws(&leaf_pk, &jws.signing_input, &jws.signature)
         .map_err(|_| WebAuthnError::MdsSignatureInvalid)?;
 
     // FIDO MDS3 §3.3 — parse the payload; only entries[].aaguid and
     // entries[].statusReports[].status are consumed.
-    let payload: MdsBlobPayload = serde_json::from_slice(&payload_bytes).map_err(|e| {
+    let payload: MdsBlobPayload = serde_json::from_slice(&jws.payload).map_err(|e| {
         WebAuthnError::MdsBlobMalformed(format!("failed to parse BLOB payload JSON: {e}"))
     })?;
 
@@ -352,6 +301,11 @@ fn status_from_wire(s: &str) -> Option<AuthenticatorStatus> {
 
 #[cfg(test)]
 mod tests {
+    use base64::{
+        engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
+        Engine as _,
+    };
+
     use super::*;
 
     #[test]

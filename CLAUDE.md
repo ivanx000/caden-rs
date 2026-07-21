@@ -49,7 +49,7 @@ The library follows the [W3C WebAuthn Level 3 specification](https://www.w3.org/
 | `src/challenge.rs` | Challenge expiry helpers: `is_expired`, `CHALLENGE_MAX_AGE_SECS` |
 | `src/client_data.rs` | `clientDataJSON` base64url → JSON → `ClientData` |
 | `src/authenticator_data.rs` | Binary authenticator data → `AuthenticatorData`; `CoseKey` enum |
-| `src/attestation.rs` | Attestation verification: "none", "packed", "fido-u2f", "android-key", "apple", "tpm" |
+| `src/attestation.rs` | Attestation verification: "none", "packed", "fido-u2f", "android-key", "apple", "tpm", "android-safetynet" |
 | `src/extensions.rs` | Typed extension accessors: `ExtensionView`, `CredProps`, `PrfExtension`, `PrfValues` |
 | `src/metadata.rs` | FIDO MDS status consumption: `AuthenticatorStatus` enum + `is_compromised()` |
 | `src/options.rs` | Registration/authentication options: `RegistrationOptions`, `AuthenticationOptions`, `UserEntity`, `AuthenticatorSelection`, and supporting enums |
@@ -528,6 +528,16 @@ crate. All security-critical operations remain inside `ring`'s audited boundary.
   `attested.name` (= nameAlg_bytes || H_nameAlg(pubArea)). `pubArea` key
   coordinates are compared against the credential key. `x5c` chain order verified.
   Returns `AttestationType::Basic` or `BasicVerified`.
+- **Android SafetyNet** (`"android-safetynet"`): `ver` and `response` are required;
+  `response` is itself a nested JWS Compact Serialization with its own `x5c` chain.
+  The JWS signature is verified (ES256 or RS256, dispatched on the JWS header's
+  `alg`) using `x5c[0]`'s public key. The JWS payload's `nonce` must equal
+  Base64(SHA-256(`authData || clientDataHash`)). The `x5c[0]` leaf cert must be
+  issued to hostname `"attest.android.com"` (checked via SAN or CN — see
+  `cert_issued_to_hostname`). `x5c` chain order verified. Returns
+  `AttestationType::Basic` or `BasicVerified`. The JWS-splitting/`x5c`-decoding
+  logic is shared with `crate::metadata`'s FIDO MDS BLOB verification via the
+  `pub(crate)` helper `split_jws_with_x5c` in `src/attestation.rs`.
 - Other formats: accepted with `AttestationType::None`
   (provenance unverifiable but credential usable).
 

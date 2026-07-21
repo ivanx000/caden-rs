@@ -14,6 +14,7 @@
 //! | `"android-key"`   | ✅ Supported                       | Signature + key-match + full chain order verified              |
 //! | `"tpm"`           | ✅ Supported                       | sig + certInfo + pubArea + full chain order verified           |
 //! | `"apple"`         | ✅ Supported                       | Nonce + key-match + full chain order verified                  |
+//! | `"android-safetynet"` | ✅ Supported                   | Nested JWS sig + nonce + hostname + full chain order verified  |
 //!
 //! ### Certificate chain verification
 //!
@@ -37,14 +38,31 @@
 //!   certificate has a Basic Constraints extension, its CA component must not
 //!   be `true` (§8.2.1 Certificate Requirements).
 //! - **ECDAA**: deprecated and not implemented.
+//!
+//! ### android-safetynet
+//!
+//! The `response` field is a nested JWS Compact Serialization (its own
+//! `header.payload.signature`, carrying its own `x5c` chain) rather than a
+//! bare signature — this format shares its JWS-splitting and `x5c`-decoding
+//! logic with `crate::metadata`'s FIDO MDS BLOB verification via the
+//! `split_jws_with_x5c` helper. Trust flows through the response's own signature,
+//! its `nonce` (bound to `authData || clientDataHash`), and its leaf
+//! certificate being issued to hostname `"attest.android.com"` — unlike
+//! `android-key` or `apple`, the credential public key is not cross-checked
+//! against the attestation certificate.
 
+use base64::{
+    engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
+    Engine as _,
+};
 use ciborium::value::Value;
 use ring::digest;
+use serde::Deserialize;
 use x509_parser::prelude::*;
 
 use crate::algorithm::{COSE_EDDSA, COSE_ES256, COSE_RS256};
 use crate::credential::{AttestationType, PublicKey};
-use crate::crypto::{verify_eddsa, verify_es256, verify_rs256};
+use crate::crypto::{verify_eddsa, verify_es256, verify_es256_jws, verify_rs256};
 use crate::der::rsa_components_to_der;
 use crate::error::{Result, WebAuthnError};
 
@@ -130,6 +148,103 @@ pub(crate) fn cert_signed_by(cert_der: &[u8], signer_der: &[u8]) -> bool {
         return false;
     };
     cert.verify_signature(Some(signer.public_key())).is_ok()
+}
+
+/// A JWS Compact Serialization (`header.payload.signature`), split and
+/// decoded up through its JOSE header's `x5c` certificate chain.
+///
+/// Shared by FIDO MDS BLOB verification (`crate::metadata::verify_and_parse_mds_blob`,
+/// FIDO MDS3 §3.2) and android-safetynet's nested JWS attestation response
+/// ([`verify_android_safetynet`], W3C WebAuthn §8.5) — both need to split a
+/// JWS, parse its JOSE header, and decode its `x5c` chain the same way,
+/// differing only in which `alg` values they accept and which payload schema
+/// and error variant follow.
+pub(crate) struct JwsX5cChain {
+    /// `alg` field of the JOSE header (e.g. `"ES256"`, `"RS256"`).
+    pub alg: String,
+    /// DER-decoded `x5c` certificate chain, leaf-first.
+    pub certs: Vec<Vec<u8>>,
+    /// `b64url(header) || "." || b64url(payload)` — the exact bytes the
+    /// signature is computed over (RFC 7515 §5.1).
+    pub signing_input: Vec<u8>,
+    /// Base64url-decoded payload bytes.
+    pub payload: Vec<u8>,
+    /// Base64url-decoded signature bytes.
+    pub signature: Vec<u8>,
+}
+
+/// JOSE header fields needed to verify a JWS's signature: `alg` and the
+/// signer's `x5c` certificate chain. The rest of the header (`typ`, `kid`,
+/// etc.) is out of scope for this library.
+#[derive(Deserialize)]
+struct JoseHeader {
+    alg: String,
+    #[serde(default)]
+    x5c: Vec<String>,
+}
+
+/// Split a JWS Compact Serialization into its three dot-separated segments
+/// and decode its JOSE header far enough to extract `alg` and the `x5c`
+/// certificate chain (RFC 7515 §4.1.6 — `x5c` entries are standard, padded
+/// base64, *not* base64url, unlike the three segments themselves — a common
+/// interop bug this function guards against by construction).
+///
+/// `malformed_err` builds the caller's error variant for any structural
+/// failure (wrong segment count, bad base64, non-JSON header, missing/empty
+/// `x5c`) — see [`JwsX5cChain`] for the two current callers.
+pub(crate) fn split_jws_with_x5c(
+    jws: &str,
+    malformed_err: impl Fn(String) -> WebAuthnError,
+) -> Result<JwsX5cChain> {
+    let segments: Vec<&str> = jws.split('.').collect();
+    let [header_b64, payload_b64, sig_b64] = segments[..] else {
+        return Err(malformed_err(format!(
+            "expected 3 dot-separated JWS segments, got {}",
+            segments.len()
+        )));
+    };
+
+    let header_bytes = URL_SAFE_NO_PAD
+        .decode(header_b64)
+        .map_err(|e| malformed_err(format!("failed to base64url-decode JWS header: {e}")))?;
+    let payload = URL_SAFE_NO_PAD
+        .decode(payload_b64)
+        .map_err(|e| malformed_err(format!("failed to base64url-decode JWS payload: {e}")))?;
+    let signature = URL_SAFE_NO_PAD
+        .decode(sig_b64)
+        .map_err(|e| malformed_err(format!("failed to base64url-decode JWS signature: {e}")))?;
+
+    let header: JoseHeader = serde_json::from_slice(&header_bytes)
+        .map_err(|e| malformed_err(format!("failed to parse JWS header JSON: {e}")))?;
+
+    if header.x5c.is_empty() {
+        return Err(malformed_err(
+            "JWS header x5c must be a non-empty certificate chain".to_string(),
+        ));
+    }
+
+    // RFC 7515 §4.1.6 — x5c entries are standard (padded) base64, NOT
+    // base64url, unlike the header/payload/signature segments themselves.
+    let certs: Vec<Vec<u8>> = header
+        .x5c
+        .iter()
+        .enumerate()
+        .map(|(i, entry)| {
+            STANDARD
+                .decode(entry)
+                .map_err(|e| malformed_err(format!("failed to base64-decode x5c[{i}]: {e}")))
+        })
+        .collect::<Result<_>>()?;
+
+    let signing_input = format!("{header_b64}.{payload_b64}").into_bytes();
+
+    Ok(JwsX5cChain {
+        alg: header.alg,
+        certs,
+        signing_input,
+        payload,
+        signature,
+    })
 }
 
 /// Verify the `x5c` certificate chain order and optionally anchor the root.
@@ -320,6 +435,11 @@ pub fn verify(
             credential_public_key,
             trust_anchors,
         ),
+
+        // §8.5 — android-safetynet attestation: legacy Android SafetyNet API.
+        "android-safetynet" => {
+            verify_android_safetynet(att_stmt, auth_data_bytes, client_data_hash, trust_anchors)
+        }
 
         // All other formats are accepted but signal that attestation was not verified.
         _other => Ok(AttestationType::None),
@@ -961,6 +1081,174 @@ fn verify_tpm(
 
     // §8.3 step 6: verify the x5c chain order and optionally the root.
     verify_x5c_chain(&certs, trust_anchors)
+}
+
+/// Verify an android-safetynet attestation statement (W3C WebAuthn §8.5).
+///
+/// `attStmt` carries `ver` (the SafetyNet response format version — SafetyNet
+/// has shipped only one format since WebAuthn adopted it, so this library
+/// requires the field to be present but does not gate on its value) and
+/// `response`, a JWS Compact Serialization whose payload is a SafetyNet
+/// attestation. Verifies that:
+/// 1. `response`'s JWS signature verifies against its own `x5c` chain (ES256
+///    or RS256, depending on which key the signing cert carries).
+/// 2. The payload's `nonce` equals Base64(SHA-256(authData || clientDataHash)).
+/// 3. The `x5c[0]` leaf cert is issued to hostname `"attest.android.com"`.
+///
+/// Then validates the full `x5c` chain order via [`verify_x5c_chain`]. Unlike
+/// `android-key` and `apple`, SafetyNet does not bind the credential public
+/// key into the attestation — trust flows entirely through the response's own
+/// signature, nonce, and hostname-pinned certificate.
+fn verify_android_safetynet(
+    att_stmt: &Value,
+    auth_data_bytes: &[u8],
+    client_data_hash: &[u8; 32],
+    trust_anchors: &[Vec<u8>],
+) -> Result<AttestationType> {
+    let stmt_map = match att_stmt {
+        Value::Map(m) => m,
+        _ => {
+            return Err(WebAuthnError::InvalidAttestationObject(
+                "android-safetynet attStmt must be a CBOR map".to_string(),
+            ))
+        }
+    };
+
+    let mut ver: Option<String> = None;
+    let mut response: Option<Vec<u8>> = None;
+
+    for (k, v) in stmt_map {
+        match k {
+            Value::Text(ref key) if key == "ver" => {
+                ver = Some(match v {
+                    Value::Text(s) => s.clone(),
+                    _ => {
+                        return Err(WebAuthnError::InvalidAttestationObject(
+                            "android-safetynet attStmt ver must be a CBOR text string".to_string(),
+                        ))
+                    }
+                });
+            }
+            Value::Text(ref key) if key == "response" => {
+                response = Some(match v {
+                    Value::Bytes(b) => b.clone(),
+                    _ => {
+                        return Err(WebAuthnError::InvalidAttestationObject(
+                            "android-safetynet attStmt response must be CBOR bytes".to_string(),
+                        ))
+                    }
+                });
+            }
+            _ => {}
+        }
+    }
+
+    // §8.5 step 1: both fields are required.
+    ver.ok_or_else(|| {
+        WebAuthnError::InvalidAttestationObject(
+            "android-safetynet attStmt missing required field: ver".to_string(),
+        )
+    })?;
+    let response = response.ok_or_else(|| {
+        WebAuthnError::InvalidAttestationObject(
+            "android-safetynet attStmt missing required field: response".to_string(),
+        )
+    })?;
+
+    // §8.5 step 3: response is a JWS Compact Serialization; split it and
+    // decode its x5c chain.
+    let response_str = std::str::from_utf8(&response).map_err(|_| {
+        WebAuthnError::InvalidAttestationObject(
+            "android-safetynet: response is not valid UTF-8".to_string(),
+        )
+    })?;
+    let jws = split_jws_with_x5c(response_str, WebAuthnError::InvalidAttestationObject)?;
+
+    // §8.5 step 3: verify the JWS signature over `header.payload` using the
+    // x5c[0] leaf certificate's public key. The signing cert's key algorithm
+    // (not the credential's) determines ES256 vs RS256 here.
+    match jws.alg.as_str() {
+        "ES256" => {
+            let leaf_pk = extract_ec_p256_public_key_from_cert(&jws.certs[0])?;
+            verify_es256_jws(&leaf_pk, &jws.signing_input, &jws.signature)?;
+        }
+        "RS256" => {
+            let leaf_pk = extract_rsa_public_key_der_from_cert(&jws.certs[0])?;
+            verify_rs256(&leaf_pk, &jws.signing_input, &jws.signature)?;
+        }
+        other => {
+            return Err(WebAuthnError::InvalidAttestationObject(format!(
+                "android-safetynet: unsupported JWS alg \"{other}\", expected ES256 or RS256"
+            )))
+        }
+    }
+
+    // §8.5 step 4: nonce must equal Base64(SHA-256(authData || clientDataHash)).
+    let mut nonce_input = Vec::with_capacity(auth_data_bytes.len() + 32);
+    nonce_input.extend_from_slice(auth_data_bytes);
+    nonce_input.extend_from_slice(client_data_hash);
+    let expected_nonce = STANDARD.encode(crate::crypto::sha256(&nonce_input));
+
+    #[derive(Deserialize)]
+    struct SafetyNetPayload {
+        nonce: String,
+    }
+    let payload: SafetyNetPayload = serde_json::from_slice(&jws.payload).map_err(|e| {
+        WebAuthnError::InvalidAttestationObject(format!(
+            "android-safetynet: failed to parse JWS payload JSON: {e}"
+        ))
+    })?;
+    if payload.nonce != expected_nonce {
+        return Err(WebAuthnError::InvalidAttestationObject(
+            "android-safetynet: nonce does not match Base64(SHA-256(authData || clientDataHash))"
+                .to_string(),
+        ));
+    }
+
+    // §8.5 step 5: the leaf cert must be issued to hostname "attest.android.com".
+    if !cert_issued_to_hostname(&jws.certs[0], "attest.android.com") {
+        return Err(WebAuthnError::InvalidAttestationObject(
+            "android-safetynet: attestation certificate is not issued to attest.android.com"
+                .to_string(),
+        ));
+    }
+
+    // §8.5 step 6: verify the x5c chain order and optionally the root.
+    verify_x5c_chain(&jws.certs, trust_anchors)
+}
+
+/// Whether `cert_der`'s Subject Alternative Name (DNS entry) or Common Name
+/// equals `hostname` exactly.
+///
+/// SafetyNet attestation certificates are ordinary TLS-style leaf
+/// certificates issued to `attest.android.com` (W3C WebAuthn §8.5 step 5) —
+/// unlike `id-fido-gen-ce-aaguid` (packed) or the Apple nonce extension,
+/// there is no FIDO-specific extension to check, so the binding is via
+/// hostname the same way a browser would validate a TLS server certificate.
+/// Returns `false` — not an error — if the certificate fails to parse as DER,
+/// consistent with how the other optional-extension checks in this module
+/// treat unparseable certificates.
+fn cert_issued_to_hostname(cert_der: &[u8], hostname: &str) -> bool {
+    let Ok((_, cert)) = X509Certificate::from_der(cert_der) else {
+        return false;
+    };
+
+    if let Ok(Some(san)) = cert.subject_alternative_name() {
+        let matches_san = san
+            .value
+            .general_names
+            .iter()
+            .any(|name| matches!(name, GeneralName::DNSName(dns) if *dns == hostname));
+        if matches_san {
+            return true;
+        }
+    }
+
+    let matches_cn = cert
+        .subject()
+        .iter_common_name()
+        .any(|cn| cn.as_str() == Ok(hostname));
+    matches_cn
 }
 
 /// Compute the TPM name for a raw `pubArea` blob.
@@ -3284,6 +3572,262 @@ mod tests {
             &[0u8; 16],
         );
         assert!(matches!(result, Ok(AttestationType::Basic)));
+    }
+
+    // ── android-safetynet ────────────────────────────────────────────────────
+
+    /// Build a leaf certificate signed by `issuer_cert`, carrying `dns_name`
+    /// as a Subject Alternative Name — stands in for a real SafetyNet
+    /// attestation cert issued to "attest.android.com".
+    fn make_leaf_with_dns_san(
+        issuer_cert: &rcgen::Certificate,
+        issuer_key: &rcgen::KeyPair,
+        dns_name: &str,
+    ) -> (rcgen::KeyPair, Vec<u8>) {
+        let leaf_key = rcgen::KeyPair::generate().expect("test setup");
+        let params = rcgen::CertificateParams::new(vec![dns_name.to_string()]).expect("test setup");
+        let der = params
+            .signed_by(&leaf_key, issuer_cert, issuer_key)
+            .expect("test setup")
+            .der()
+            .to_vec();
+        (leaf_key, der)
+    }
+
+    /// Sign `message` with `leaf_key`'s private key in JWS "fixed" (raw
+    /// `r || s`) ES256 encoding — matches what `verify_es256_jws` (and
+    /// therefore `verify_android_safetynet`) expects per RFC 7518 §3.4.
+    fn jws_sign_es256(leaf_key: &rcgen::KeyPair, message: &[u8]) -> Vec<u8> {
+        use ring::rand::SystemRandom;
+        use ring::signature::{EcdsaKeyPair, ECDSA_P256_SHA256_FIXED_SIGNING};
+
+        let rng = SystemRandom::new();
+        let kp = EcdsaKeyPair::from_pkcs8(
+            &ECDSA_P256_SHA256_FIXED_SIGNING,
+            leaf_key.serialized_der(),
+            &rng,
+        )
+        .expect("test setup");
+        kp.sign(&rng, message)
+            .expect("test setup")
+            .as_ref()
+            .to_vec()
+    }
+
+    /// Build a complete, validly-signed SafetyNet `response` JWS for the
+    /// given leaf signing key, leaf-first DER certificate chain, and nonce
+    /// (already Base64-encoded, as the wire payload carries it).
+    fn build_safetynet_response(
+        leaf_key: &rcgen::KeyPair,
+        chain_der: &[Vec<u8>],
+        nonce_b64: &str,
+    ) -> String {
+        let x5c: Vec<String> = chain_der.iter().map(|c| STANDARD.encode(c)).collect();
+        let header_json = serde_json::json!({ "alg": "ES256", "x5c": x5c }).to_string();
+        let header_b64 = URL_SAFE_NO_PAD.encode(header_json.as_bytes());
+
+        let payload_json = serde_json::json!({
+            "nonce": nonce_b64,
+            "timestampMs": 1_600_000_000_000i64,
+            "apkPackageName": "com.google.android.gms",
+            "ctsProfileMatch": true,
+            "basicIntegrity": true,
+        })
+        .to_string();
+        let payload_b64 = URL_SAFE_NO_PAD.encode(payload_json.as_bytes());
+
+        let signing_input = format!("{header_b64}.{payload_b64}");
+        let sig = jws_sign_es256(leaf_key, signing_input.as_bytes());
+        let sig_b64 = URL_SAFE_NO_PAD.encode(&sig);
+
+        format!("{header_b64}.{payload_b64}.{sig_b64}")
+    }
+
+    fn safetynet_att_stmt(response: &str) -> Value {
+        Value::Map(vec![
+            (
+                Value::Text("ver".to_string()),
+                Value::Text("14687520".to_string()),
+            ),
+            (
+                Value::Text("response".to_string()),
+                Value::Bytes(response.as_bytes().to_vec()),
+            ),
+        ])
+    }
+
+    fn expected_safetynet_nonce(auth_data: &[u8], client_data_hash: &[u8; 32]) -> String {
+        let mut nonce_input = auth_data.to_vec();
+        nonce_input.extend_from_slice(client_data_hash);
+        STANDARD.encode(crate::crypto::sha256(&nonce_input))
+    }
+
+    #[test]
+    fn safetynet_valid_attestation_returns_basic() {
+        let (root_key, root_cert, root_der) = make_ca();
+        let (leaf_key, leaf_der) =
+            make_leaf_with_dns_san(&root_cert, &root_key, "attest.android.com");
+
+        let auth_data = b"fake-auth-data";
+        let client_data_hash = [0xABu8; 32];
+        let nonce = expected_safetynet_nonce(auth_data, &client_data_hash);
+
+        let response = build_safetynet_response(&leaf_key, &[leaf_der, root_der], &nonce);
+        let stmt = safetynet_att_stmt(&response);
+
+        let result = verify(
+            "android-safetynet",
+            &stmt,
+            auth_data,
+            &client_data_hash,
+            &dummy_es256_key(),
+            &[],
+            &[],
+            &[0u8; 16],
+        );
+        assert!(matches!(result, Ok(AttestationType::Basic)));
+    }
+
+    #[test]
+    fn safetynet_nonce_mismatch_rejected() {
+        let (root_key, root_cert, root_der) = make_ca();
+        let (leaf_key, leaf_der) =
+            make_leaf_with_dns_san(&root_cert, &root_key, "attest.android.com");
+
+        let auth_data = b"fake-auth-data";
+        let client_data_hash = [0xABu8; 32];
+        // Wrong nonce: not derived from authData || clientDataHash.
+        let wrong_nonce = STANDARD.encode(crate::crypto::sha256(b"wrong input"));
+
+        let response = build_safetynet_response(&leaf_key, &[leaf_der, root_der], &wrong_nonce);
+        let stmt = safetynet_att_stmt(&response);
+
+        let result = verify(
+            "android-safetynet",
+            &stmt,
+            auth_data,
+            &client_data_hash,
+            &dummy_es256_key(),
+            &[],
+            &[],
+            &[0u8; 16],
+        );
+        assert!(matches!(
+            result,
+            Err(WebAuthnError::InvalidAttestationObject(_))
+        ));
+    }
+
+    #[test]
+    fn safetynet_wrong_hostname_rejected() {
+        let (root_key, root_cert, root_der) = make_ca();
+        // Leaf is issued to the wrong hostname — signature and nonce are
+        // otherwise perfectly valid.
+        let (leaf_key, leaf_der) =
+            make_leaf_with_dns_san(&root_cert, &root_key, "not-attest.android.com");
+
+        let auth_data = b"fake-auth-data";
+        let client_data_hash = [0xABu8; 32];
+        let nonce = expected_safetynet_nonce(auth_data, &client_data_hash);
+
+        let response = build_safetynet_response(&leaf_key, &[leaf_der, root_der], &nonce);
+        let stmt = safetynet_att_stmt(&response);
+
+        let result = verify(
+            "android-safetynet",
+            &stmt,
+            auth_data,
+            &client_data_hash,
+            &dummy_es256_key(),
+            &[],
+            &[],
+            &[0u8; 16],
+        );
+        assert!(matches!(
+            result,
+            Err(WebAuthnError::InvalidAttestationObject(_))
+        ));
+    }
+
+    #[test]
+    fn safetynet_bad_chain_order_rejected() {
+        // Three-level chain (root -> intermediate -> leaf) so the leaf can
+        // stay first (correct signer, correct hostname) while the
+        // intermediate and root are swapped — isolating the chain-order
+        // check from the signature/hostname checks that run before it.
+        let (root_key, root_cert, root_der) = make_ca();
+        let (inter_key, inter_cert, inter_der) = make_intermediate(&root_cert, &root_key);
+        let (leaf_key, leaf_der) =
+            make_leaf_with_dns_san(&inter_cert, &inter_key, "attest.android.com");
+
+        let auth_data = b"fake-auth-data";
+        let client_data_hash = [0xABu8; 32];
+        let nonce = expected_safetynet_nonce(auth_data, &client_data_hash);
+
+        // Swap intermediate and root: leaf.issuer no longer matches
+        // certs[1].subject.
+        let response =
+            build_safetynet_response(&leaf_key, &[leaf_der, root_der, inter_der], &nonce);
+        let stmt = safetynet_att_stmt(&response);
+
+        let result = verify(
+            "android-safetynet",
+            &stmt,
+            auth_data,
+            &client_data_hash,
+            &dummy_es256_key(),
+            &[],
+            &[],
+            &[0u8; 16],
+        );
+        assert!(matches!(
+            result,
+            Err(WebAuthnError::AttestationChainInvalid(_))
+        ));
+    }
+
+    #[test]
+    fn safetynet_missing_ver_rejected() {
+        let stmt = Value::Map(vec![(
+            Value::Text("response".to_string()),
+            Value::Bytes(b"x.y.z".to_vec()),
+        )]);
+        let result = verify(
+            "android-safetynet",
+            &stmt,
+            b"",
+            &[0u8; 32],
+            &dummy_es256_key(),
+            &[],
+            &[],
+            &[0u8; 16],
+        );
+        assert!(matches!(
+            result,
+            Err(WebAuthnError::InvalidAttestationObject(_))
+        ));
+    }
+
+    #[test]
+    fn safetynet_missing_response_rejected() {
+        let stmt = Value::Map(vec![(
+            Value::Text("ver".to_string()),
+            Value::Text("14687520".to_string()),
+        )]);
+        let result = verify(
+            "android-safetynet",
+            &stmt,
+            b"",
+            &[0u8; 32],
+            &dummy_es256_key(),
+            &[],
+            &[],
+            &[0u8; 16],
+        );
+        assert!(matches!(
+            result,
+            Err(WebAuthnError::InvalidAttestationObject(_))
+        ));
     }
 
     // ── helpers ──────────────────────────────────────────────────────────────

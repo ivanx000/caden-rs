@@ -9,6 +9,20 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- **Android SafetyNet attestation verification** (W3C WebAuthn §8.5) — new
+  `attestation::verify` case for `"android-safetynet"`. The `response` field
+  is itself a nested JWS Compact Serialization; its signature is verified
+  (ES256 or RS256, dispatched on the JWS header's `alg`) against its own
+  `x5c` chain, its payload's `nonce` is checked against
+  Base64(SHA-256(`authData || clientDataHash`)), and its `x5c[0]` leaf
+  certificate is required to be issued to hostname `"attest.android.com"`
+  (via SAN or CN). The full `x5c` chain order is verified the same way as
+  every other x5c-carrying format, and the chain root is checked against
+  configured trust anchors when present. The JWS-splitting and `x5c`-decoding
+  logic needed here is structurally identical to what FIDO MDS BLOB
+  verification already does, so it's now factored into a shared
+  `attestation::split_jws_with_x5c` helper used by both.
+
 - **FIDO Metadata Service (MDS) BLOB verification and parsing** (FIDO MDS3
   §3.2, §3.3) — new `metadata::verify_and_parse_mds_blob(blob, trust_root)`
   verifies and parses the MDS BLOB JWT so callers only need to perform the
