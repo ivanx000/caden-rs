@@ -13,7 +13,7 @@ documentation = "https://docs.rs/caden"
 
 [lib]
 # Keep the Rust crate name as `webauthn` so existing code and examples import
-# `use webauthn::...` while the crates.io package name is `webauthn-rs-demo`.
+# `use webauthn::...` while the crates.io package name is `caden`.
 name = "webauthn"
 
 [features]

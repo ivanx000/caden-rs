@@ -49,10 +49,11 @@ worthless without private keys), and password reuse (each site gets a unique key
 | `"none"` attestation format | ✅ Implemented |
 | Packed self-attestation (no x5c) | ✅ Implemented — signature fully verified |
 | Packed basic attestation (x5c present) | ✅ Implemented — signature + x5c chain order verified; optional trust-anchor pinning via `trust_anchors()` |
-| FIDO U2F attestation (`"fido-u2f"`) | ✅ Implemented — signature + x5c chain order verified; cert chain requires FIDO MDS for full provenance |
-| Android Key attestation (`"android-key"`) | ✅ Implemented — signature + key-match + x5c chain order verified; cert chain requires FIDO MDS for full provenance |
-| Apple attestation (`"apple"`) | ✅ Implemented — nonce extension + key-match + x5c chain order verified; cert chain requires Apple MDS for full provenance |
-| TPM attestation (`"tpm"`) | ✅ Implemented — certInfo + pubArea + x5c chain order verified; cert chain requires FIDO MDS for full provenance |
+| FIDO U2F attestation (`"fido-u2f"`) | ✅ Implemented — signature + x5c chain order verified; optional trust-anchor pinning via `trust_anchors()` |
+| Android Key attestation (`"android-key"`) | ✅ Implemented — signature + key-match + x5c chain order verified; optional trust-anchor pinning via `trust_anchors()` |
+| Apple attestation (`"apple"`) | ✅ Implemented — nonce extension + key-match + x5c chain order verified; optional trust-anchor pinning via `trust_anchors()` |
+| TPM attestation (`"tpm"`) | ✅ Implemented — certInfo + pubArea + x5c chain order verified; optional trust-anchor pinning via `trust_anchors()` |
+| Android SafetyNet attestation (`"android-safetynet"`) | ✅ Implemented — nested JWS signature + nonce + hostname + x5c chain order verified; optional trust-anchor pinning via `trust_anchors()` |
 | UV flag enforcement (`require_user_verification`) | ✅ Implemented — opt-in via builder; off by default |
 | Algorithm allowlist (`allowed_algorithms`) | ✅ Implemented — opt-in via builder; empty = accept all |
 | Backup eligibility / state tracking (BE/BS flags, §6.1) | ✅ Implemented — `backup_eligible` and `backup_state` on `Credential`, `RegistrationResult`, `AuthenticationResult`; BE immutability enforced at authentication |
@@ -67,7 +68,7 @@ worthless without private keys), and password reuse (each site gets a unique key
 | Fixed test vectors (registration + authentication) | ✅ Implemented |
 | `serde` feature — Serialize/Deserialize on public types | ✅ Opt-in via `features = ["serde"]` |
 | Token binding | ❌ Not implemented |
-| FIDO Metadata Service (MDS) lookup | ❌ Not implemented |
+| FIDO Metadata Service (MDS) BLOB verification (`metadata::verify_and_parse_mds_blob`) | ✅ Implemented — verifies JWS signature + `x5c` chain, parses per-AAGUID status; enforces compromised/revoked status via `authenticator_metadata()`. HTTP fetch of the BLOB itself remains the caller's responsibility (stateless, no network I/O) |
 
 This scope is intentional. The library demonstrates mastery of the core protocol
 and cryptographic operations without adding surface area that obscures the design.
@@ -238,11 +239,12 @@ cargo package --dry-run           # crates.io readiness check
 
 ### What this library does NOT protect against
 
-- **Full attestation chain** — `"none"`, `"packed"` (self-attestation), `"fido-u2f"`,
-  and `"android-key"` are verified (signature and key-match checks). Certificate chain
-  validation against the FIDO Metadata Service is not implemented for any format, so
-  device provenance — distinguishing genuine hardware from a software emulator — cannot
-  be fully confirmed.
+- **FIDO Metadata Service BLOB fetch** — the library verifies a caller-supplied MDS
+  BLOB's JWS signature and `x5c` chain, and enforces compromised/revoked status via
+  `RelyingParty::authenticator_metadata` (see `src/metadata.rs`), but it does not
+  perform the HTTP fetch of the BLOB itself. Without a caller-supplied BLOB, device
+  provenance — distinguishing genuine hardware from a software emulator — cannot be
+  fully confirmed.
 - **Token binding** — `tokenBinding` in `clientDataJSON` is ignored.
 - **Cloned authenticators with zero counters** — if `sign_count == 0` the spec
   allows accepting the assertion (the authenticator simply doesn't count). Clone
