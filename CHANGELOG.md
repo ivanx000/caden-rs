@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.9.0] — 2026-08-05
 
 ### Added
 
@@ -80,12 +80,6 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   certificates omit Basic Constraints entirely for non-CA end-entity certs
   rather than including it with an explicit `CA:FALSE`, so an absent
   extension is not treated as a failure.
-
----
-
-## [0.9.0] — 2026-07-14
-
-### Added
 
 - **`RegistrationOptions::exclude_credentials`** — new field on [`RegistrationOptions`]
   populated from a new `exclude_credentials` parameter on
