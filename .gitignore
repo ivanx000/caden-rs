@@ -1,6 +1,9 @@
 # Rust build artefacts
 /target
 
+# macOS Finder metadata
+.DS_Store
+
 # Environment / secrets
 .env
 .env.*
