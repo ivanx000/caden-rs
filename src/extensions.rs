@@ -1,12 +1,18 @@
 //! Typed accessors for WebAuthn authenticator extensions (§10.5).
 //!
-//! The three most common extensions are modeled here:
+//! The extensions modeled here:
 //!
 //! - [`CredProps`] (`"credProps"`) — whether the credential is a resident key /
 //!   discoverable credential (§10.4)
 //! - `appid` — whether the legacy U2F appId extension was applied (§10.1)
 //! - [`PrfExtension`] (`"prf"`) — pseudo-random function output for client-side
 //!   secret derivation
+//! - [`LargeBlobExtension`] (`"largeBlob"`) — per-credential large blob storage
+//!   (§10.5)
+//! - [`CredProtectPolicy`] (`"credProtect"`) — the CTAP2 credential protection
+//!   policy actually applied (§10.7)
+//! - `minPinLength` — the authenticator's minimum PIN length, in Unicode
+//!   codepoints (§10.8)
 //!
 //! Obtain a typed view from a ceremony result:
 //!
@@ -62,6 +68,40 @@ pub struct PrfValues {
 pub struct PrfExtension {
     /// PRF output values, if the authenticator returned them.
     pub results: Option<PrfValues>,
+}
+
+/// Typed result of the `largeBlob` extension (§10.5).
+///
+/// The extension's output shape differs by ceremony: registration reports
+/// `supported`, and authentication reports either `blob` (read) or `written`
+/// (write), depending on which operation the RP requested. All fields are
+/// therefore optional — only the field relevant to the current ceremony and
+/// operation will be `Some`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LargeBlobExtension {
+    /// Registration only: whether the authenticator supports the large blob store.
+    pub supported: Option<bool>,
+    /// Authentication read only: the blob bytes retrieved for this credential.
+    pub blob: Option<Vec<u8>>,
+    /// Authentication write only: whether the write succeeded.
+    pub written: Option<bool>,
+}
+
+/// The CTAP2 credential protection policy applied to a credential (§10.7).
+///
+/// Returned as a single CBOR unsigned integer (1, 2, or 3) in the
+/// `credProtect` extension output. This is a CTAP2-level extension: the RP
+/// requests a policy at registration time and the authenticator reports back
+/// whichever policy it actually enforced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CredProtectPolicy {
+    /// The credential is usable without user verification.
+    UserVerificationOptional,
+    /// The credential is usable without user verification, but is only
+    /// discoverable in a credential ID list (not the empty-list passkey flow).
+    UserVerificationOptionalWithCredentialIdList,
+    /// The credential requires user verification for every use.
+    UserVerificationRequired,
 }
 
 /// A typed view over the raw authenticator extension map.
@@ -131,6 +171,50 @@ impl<'a> ExtensionView<'a> {
         };
 
         Some(PrfExtension { results })
+    }
+
+    /// Extract the `largeBlob` extension value, if present (§10.5).
+    ///
+    /// Returns `None` if the extension is absent or the CBOR value is not a
+    /// map. `supported`, `blob`, and `written` are each `None` if the
+    /// authenticator omitted that field or it has an unexpected CBOR type.
+    pub fn large_blob(&self) -> Option<LargeBlobExtension> {
+        let map = match self.map.get("largeBlob")? {
+            Value::Map(m) => m,
+            _ => return None,
+        };
+        Some(LargeBlobExtension {
+            supported: find_bool(map, "supported"),
+            blob: find_bytes(map, "blob"),
+            written: find_bool(map, "written"),
+        })
+    }
+
+    /// Extract the `credProtect` extension value, if present (§10.7).
+    ///
+    /// Returns `None` if the extension is absent, is not a CBOR integer, or
+    /// does not match one of the three defined policy values (1, 2, or 3).
+    pub fn cred_protect(&self) -> Option<CredProtectPolicy> {
+        match self.map.get("credProtect")? {
+            Value::Integer(i) => match u8::try_from(*i).ok()? {
+                1 => Some(CredProtectPolicy::UserVerificationOptional),
+                2 => Some(CredProtectPolicy::UserVerificationOptionalWithCredentialIdList),
+                3 => Some(CredProtectPolicy::UserVerificationRequired),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// Extract the `minPinLength` extension value, if present (§10.8).
+    ///
+    /// Returns `None` if the extension is absent, is not a CBOR integer, or
+    /// does not fit in a `u32`.
+    pub fn min_pin_length(&self) -> Option<u32> {
+        match self.map.get("minPinLength")? {
+            Value::Integer(i) => u32::try_from(*i).ok(),
+            _ => None,
+        }
     }
 }
 
@@ -345,6 +429,159 @@ mod tests {
         assert!(view.prf().is_none());
     }
 
+    // ── large_blob ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn large_blob_registration_supported() {
+        let inner = Value::Map(vec![(
+            Value::Text("supported".to_string()),
+            Value::Bool(true),
+        )]);
+        let map = make_map(&[("largeBlob", inner)]);
+        let view = ExtensionView::new(&map);
+        assert_eq!(
+            view.large_blob(),
+            Some(LargeBlobExtension {
+                supported: Some(true),
+                blob: None,
+                written: None,
+            })
+        );
+    }
+
+    #[test]
+    fn large_blob_authentication_read() {
+        let inner = Value::Map(vec![(
+            Value::Text("blob".to_string()),
+            Value::Bytes(vec![0xDE, 0xAD]),
+        )]);
+        let map = make_map(&[("largeBlob", inner)]);
+        let view = ExtensionView::new(&map);
+        assert_eq!(
+            view.large_blob(),
+            Some(LargeBlobExtension {
+                supported: None,
+                blob: Some(vec![0xDE, 0xAD]),
+                written: None,
+            })
+        );
+    }
+
+    #[test]
+    fn large_blob_authentication_write() {
+        let inner = Value::Map(vec![(
+            Value::Text("written".to_string()),
+            Value::Bool(true),
+        )]);
+        let map = make_map(&[("largeBlob", inner)]);
+        let view = ExtensionView::new(&map);
+        assert_eq!(
+            view.large_blob(),
+            Some(LargeBlobExtension {
+                supported: None,
+                blob: None,
+                written: Some(true),
+            })
+        );
+    }
+
+    #[test]
+    fn large_blob_value_not_a_map_returns_none() {
+        let map = make_map(&[("largeBlob", Value::Bool(true))]);
+        let view = ExtensionView::new(&map);
+        assert!(view.large_blob().is_none());
+    }
+
+    #[test]
+    fn large_blob_absent_returns_none() {
+        let map = make_map(&[]);
+        let view = ExtensionView::new(&map);
+        assert!(view.large_blob().is_none());
+    }
+
+    // ── cred_protect ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn cred_protect_user_verification_optional() {
+        let map = make_map(&[("credProtect", Value::Integer(1i64.into()))]);
+        let view = ExtensionView::new(&map);
+        assert_eq!(
+            view.cred_protect(),
+            Some(CredProtectPolicy::UserVerificationOptional)
+        );
+    }
+
+    #[test]
+    fn cred_protect_user_verification_optional_with_credential_id_list() {
+        let map = make_map(&[("credProtect", Value::Integer(2i64.into()))]);
+        let view = ExtensionView::new(&map);
+        assert_eq!(
+            view.cred_protect(),
+            Some(CredProtectPolicy::UserVerificationOptionalWithCredentialIdList)
+        );
+    }
+
+    #[test]
+    fn cred_protect_user_verification_required() {
+        let map = make_map(&[("credProtect", Value::Integer(3i64.into()))]);
+        let view = ExtensionView::new(&map);
+        assert_eq!(
+            view.cred_protect(),
+            Some(CredProtectPolicy::UserVerificationRequired)
+        );
+    }
+
+    #[test]
+    fn cred_protect_out_of_range_returns_none() {
+        let map = make_map(&[("credProtect", Value::Integer(4i64.into()))]);
+        let view = ExtensionView::new(&map);
+        assert!(view.cred_protect().is_none());
+    }
+
+    #[test]
+    fn cred_protect_wrong_type_returns_none() {
+        let map = make_map(&[("credProtect", Value::Bool(true))]);
+        let view = ExtensionView::new(&map);
+        assert!(view.cred_protect().is_none());
+    }
+
+    #[test]
+    fn cred_protect_absent_returns_none() {
+        let map = make_map(&[]);
+        let view = ExtensionView::new(&map);
+        assert!(view.cred_protect().is_none());
+    }
+
+    // ── min_pin_length ────────────────────────────────────────────────────────
+
+    #[test]
+    fn min_pin_length_present() {
+        let map = make_map(&[("minPinLength", Value::Integer(6i64.into()))]);
+        let view = ExtensionView::new(&map);
+        assert_eq!(view.min_pin_length(), Some(6));
+    }
+
+    #[test]
+    fn min_pin_length_wrong_type_returns_none() {
+        let map = make_map(&[("minPinLength", Value::Bool(true))]);
+        let view = ExtensionView::new(&map);
+        assert!(view.min_pin_length().is_none());
+    }
+
+    #[test]
+    fn min_pin_length_negative_returns_none() {
+        let map = make_map(&[("minPinLength", Value::Integer((-1i64).into()))]);
+        let view = ExtensionView::new(&map);
+        assert!(view.min_pin_length().is_none());
+    }
+
+    #[test]
+    fn min_pin_length_absent_returns_none() {
+        let map = make_map(&[]);
+        let view = ExtensionView::new(&map);
+        assert!(view.min_pin_length().is_none());
+    }
+
     // ── cross-extension isolation ─────────────────────────────────────────────
 
     #[test]
@@ -358,5 +595,8 @@ mod tests {
         assert!(view.cred_props().is_some());
         assert!(view.appid().is_none());
         assert!(view.prf().is_none());
+        assert!(view.large_blob().is_none());
+        assert!(view.cred_protect().is_none());
+        assert!(view.min_pin_length().is_none());
     }
 }

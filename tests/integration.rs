@@ -2383,6 +2383,150 @@ fn authentication_typed_appid_accessor() {
 }
 
 #[test]
+fn registration_typed_large_blob_accessor() {
+    // Same setup as registration_typed_cred_props_accessor but exercises the
+    // largeBlob extension (§10.5) registration output: {"supported": bool}.
+    let fixture = Fixture::new();
+    let rp = RelyingParty::new(RP_ID, ORIGIN, "Test RP");
+
+    let cose_cbor = encode_cose_key(&fixture.public_key_bytes);
+    let ext_map = Value::Map(vec![(
+        Value::Text("largeBlob".to_string()),
+        Value::Map(vec![(
+            Value::Text("supported".to_string()),
+            Value::Bool(true),
+        )]),
+    )]);
+    let mut ext_bytes = Vec::new();
+    ciborium::into_writer(&ext_map, &mut ext_bytes).unwrap();
+
+    let mut at_section = vec![0u8; 16];
+    at_section.extend_from_slice(&(fixture.cred_id.len() as u16).to_be_bytes());
+    at_section.extend_from_slice(&fixture.cred_id);
+    at_section.extend_from_slice(&cose_cbor);
+    at_section.extend_from_slice(&ext_bytes);
+
+    let auth_data = {
+        let rp_hash = webauthn::crypto::sha256(RP_ID.as_bytes());
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&rp_hash);
+        buf.push(0xC1); // UP | AT | ED
+        buf.extend_from_slice(&1u32.to_be_bytes());
+        buf.extend_from_slice(&at_section);
+        buf
+    };
+
+    let challenge = Challenge::new().unwrap();
+    let client_data_json = make_client_data_json_bytes("webauthn.create", &challenge.bytes, ORIGIN);
+    let response = AuthenticatorAttestationResponse {
+        client_data_json,
+        attestation_object: make_attestation_object(&auth_data, "none"),
+    };
+    let result = rp
+        .verify_registration(&challenge, &response, b"uid")
+        .expect("registration with largeBlob extension should succeed");
+
+    let view = result.extensions().expect("extensions() must return Some");
+    let large_blob = view.large_blob().expect("large_blob() must return Some");
+    assert_eq!(large_blob.supported, Some(true));
+    assert_eq!(large_blob.blob, None);
+    assert_eq!(large_blob.written, None);
+}
+
+#[test]
+fn registration_typed_cred_protect_accessor() {
+    // Same setup as registration_typed_cred_props_accessor but exercises the
+    // credProtect extension (§10.7): a single CBOR unsigned integer (1-3).
+    let fixture = Fixture::new();
+    let rp = RelyingParty::new(RP_ID, ORIGIN, "Test RP");
+
+    let cose_cbor = encode_cose_key(&fixture.public_key_bytes);
+    let ext_map = Value::Map(vec![(
+        Value::Text("credProtect".to_string()),
+        Value::Integer(3i64.into()),
+    )]);
+    let mut ext_bytes = Vec::new();
+    ciborium::into_writer(&ext_map, &mut ext_bytes).unwrap();
+
+    let mut at_section = vec![0u8; 16];
+    at_section.extend_from_slice(&(fixture.cred_id.len() as u16).to_be_bytes());
+    at_section.extend_from_slice(&fixture.cred_id);
+    at_section.extend_from_slice(&cose_cbor);
+    at_section.extend_from_slice(&ext_bytes);
+
+    let auth_data = {
+        let rp_hash = webauthn::crypto::sha256(RP_ID.as_bytes());
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&rp_hash);
+        buf.push(0xC1); // UP | AT | ED
+        buf.extend_from_slice(&1u32.to_be_bytes());
+        buf.extend_from_slice(&at_section);
+        buf
+    };
+
+    let challenge = Challenge::new().unwrap();
+    let client_data_json = make_client_data_json_bytes("webauthn.create", &challenge.bytes, ORIGIN);
+    let response = AuthenticatorAttestationResponse {
+        client_data_json,
+        attestation_object: make_attestation_object(&auth_data, "none"),
+    };
+    let result = rp
+        .verify_registration(&challenge, &response, b"uid")
+        .expect("registration with credProtect extension should succeed");
+
+    let view = result.extensions().expect("extensions() must return Some");
+    assert_eq!(
+        view.cred_protect(),
+        Some(webauthn::CredProtectPolicy::UserVerificationRequired)
+    );
+}
+
+#[test]
+fn registration_typed_min_pin_length_accessor() {
+    // Same setup as registration_typed_cred_props_accessor but exercises the
+    // minPinLength extension (§10.8): a single CBOR unsigned integer.
+    let fixture = Fixture::new();
+    let rp = RelyingParty::new(RP_ID, ORIGIN, "Test RP");
+
+    let cose_cbor = encode_cose_key(&fixture.public_key_bytes);
+    let ext_map = Value::Map(vec![(
+        Value::Text("minPinLength".to_string()),
+        Value::Integer(6i64.into()),
+    )]);
+    let mut ext_bytes = Vec::new();
+    ciborium::into_writer(&ext_map, &mut ext_bytes).unwrap();
+
+    let mut at_section = vec![0u8; 16];
+    at_section.extend_from_slice(&(fixture.cred_id.len() as u16).to_be_bytes());
+    at_section.extend_from_slice(&fixture.cred_id);
+    at_section.extend_from_slice(&cose_cbor);
+    at_section.extend_from_slice(&ext_bytes);
+
+    let auth_data = {
+        let rp_hash = webauthn::crypto::sha256(RP_ID.as_bytes());
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&rp_hash);
+        buf.push(0xC1); // UP | AT | ED
+        buf.extend_from_slice(&1u32.to_be_bytes());
+        buf.extend_from_slice(&at_section);
+        buf
+    };
+
+    let challenge = Challenge::new().unwrap();
+    let client_data_json = make_client_data_json_bytes("webauthn.create", &challenge.bytes, ORIGIN);
+    let response = AuthenticatorAttestationResponse {
+        client_data_json,
+        attestation_object: make_attestation_object(&auth_data, "none"),
+    };
+    let result = rp
+        .verify_registration(&challenge, &response, b"uid")
+        .expect("registration with minPinLength extension should succeed");
+
+    let view = result.extensions().expect("extensions() must return Some");
+    assert_eq!(view.min_pin_length(), Some(6));
+}
+
+#[test]
 fn registration_without_extension_data_has_none_extensions() {
     let fixture = Fixture::new();
     let rp = RelyingParty::new(RP_ID, ORIGIN, "Test RP");
