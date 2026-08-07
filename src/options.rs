@@ -56,6 +56,15 @@ pub enum AttestationPreference {
     Indirect,
     /// The authenticator must produce a direct attestation statement.
     Direct,
+    /// Request attestation that may include uniquely identifying information,
+    /// for use in closed/enterprise deployments where the RP has an
+    /// out-of-band agreement with the authenticator vendor.
+    ///
+    /// This is a hint to the authenticator, not a property the RP verifies:
+    /// unlike `Direct`, there is no additional check on the RP side —
+    /// `attestation.rs` verifies whatever statement format arrives the same
+    /// way regardless of which preference was requested.
+    Enterprise,
 }
 
 // ─── AuthenticatorAttachment ──────────────────────────────────────────────────
