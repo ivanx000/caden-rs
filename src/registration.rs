@@ -509,6 +509,7 @@ impl RelyingParty {
             attestation: AttestationPreference::None,
             exclude_credentials,
             authenticator_selection: self.default_authenticator_selection.clone(),
+            extensions: None,
         })
     }
 
@@ -970,5 +971,72 @@ mod tests {
         opts.attestation = AttestationPreference::Enterprise;
         let json = serde_json::to_value(&opts).expect("serialization failed");
         assert_eq!(json["attestation"], "enterprise");
+    }
+
+    // ── extension request tests ──────────────────────────────────────────────
+
+    #[test]
+    fn begin_registration_extensions_default_to_none() {
+        let opts = make_rp()
+            .begin_registration(make_user(), std::iter::empty::<Vec<u8>>())
+            .expect("begin_registration failed");
+        assert!(opts.extensions.is_none());
+    }
+
+    #[test]
+    fn begin_registration_omits_extensions_key_when_none() {
+        let opts = make_rp()
+            .begin_registration(make_user(), std::iter::empty::<Vec<u8>>())
+            .expect("begin_registration failed");
+        let json = serde_json::to_value(&opts).expect("serialization failed");
+        assert!(json.get("extensions").is_none());
+    }
+
+    #[test]
+    fn begin_registration_extensions_json_shape() {
+        use crate::extensions::CredProtectPolicy;
+        use crate::options::{
+            CredProtectInput, LargeBlobRegistrationInput, LargeBlobSupport, PrfEvalInput, PrfInput,
+            RegistrationExtensions,
+        };
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+
+        let mut opts = make_rp()
+            .begin_registration(make_user(), std::iter::empty::<Vec<u8>>())
+            .expect("begin_registration failed");
+        opts.extensions = Some(RegistrationExtensions {
+            cred_props: Some(true),
+            prf: Some(PrfInput {
+                eval: Some(PrfEvalInput {
+                    first: vec![1, 2, 3],
+                    second: None,
+                }),
+            }),
+            large_blob: Some(LargeBlobRegistrationInput {
+                support: LargeBlobSupport::Required,
+            }),
+            cred_protect: Some(CredProtectInput {
+                policy: CredProtectPolicy::UserVerificationRequired,
+                enforce: true,
+            }),
+            min_pin_length: Some(true),
+        });
+        let json = serde_json::to_value(&opts).expect("serialization failed");
+
+        assert_eq!(json["extensions"]["credProps"], true);
+        assert_eq!(
+            json["extensions"]["prf"]["eval"]["first"],
+            URL_SAFE_NO_PAD.encode([1, 2, 3])
+        );
+        assert_eq!(json["extensions"]["largeBlob"]["support"], "required");
+        assert_eq!(
+            json["extensions"]["credProtect"]["credentialProtectionPolicy"],
+            "userVerificationRequired"
+        );
+        assert_eq!(
+            json["extensions"]["credProtect"]["enforceCredentialProtectionPolicy"],
+            true
+        );
+        assert_eq!(json["extensions"]["minPinLength"], true);
     }
 }

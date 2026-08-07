@@ -12,6 +12,7 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde::ser::SerializeMap;
 
 use crate::credential::Challenge;
+use crate::extensions::CredProtectPolicy;
 
 // ─── UserEntity ───────────────────────────────────────────────────────────────
 
@@ -156,6 +157,260 @@ pub struct AuthenticatorSelection {
     pub user_verification: UserVerificationRequirement,
 }
 
+// ─── Extension inputs (§9) ────────────────────────────────────────────────────
+//
+// These types are the client extension *inputs* — the RP's request, sent
+// alongside `RegistrationOptions` / `AuthenticationOptions` as the
+// `"extensions"` field. They are the counterpart to the typed *output*
+// accessors in `crate::extensions`, which read what the authenticator
+// actually returned after the ceremony. An RP typically sets
+// `RegistrationOptions::extensions` / `AuthenticationOptions::extensions`
+// directly on the value returned by `begin_registration` /
+// `authentication_options`, the same way `RegistrationOptions::attestation`
+// is overridden after construction.
+//
+// Spec: <https://www.w3.org/TR/webauthn-3/#sctn-extensions>
+
+/// PRF evaluation salt values for the `prf` extension.
+///
+/// `first` is required; `second` is only needed when the caller wants a
+/// second, independent PRF output from the same credential.
+#[derive(Debug, Clone)]
+pub struct PrfEvalInput {
+    /// First PRF input, combined by the authenticator with the credential's
+    /// secret to derive the output.
+    pub first: Vec<u8>,
+    /// Optional second PRF input, evaluated in the same call.
+    pub second: Option<Vec<u8>>,
+}
+
+/// Client extension input for the `prf` extension.
+///
+/// Valid for both registration and authentication. `eval: None` requests PRF
+/// support (and, at registration, that the extension be enabled for this
+/// credential) without evaluating a value yet — the caller can supply
+/// `eval` on a later authentication once salts are known.
+#[derive(Debug, Clone, Default)]
+pub struct PrfInput {
+    /// Salts to evaluate immediately, or `None` to only request PRF support.
+    pub eval: Option<PrfEvalInput>,
+}
+
+/// Whether large blob support is required or merely preferred (registration only).
+///
+/// Spec: <https://www.w3.org/TR/webauthn-3/#sctn-large-blob-extension>
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LargeBlobSupport {
+    /// Fail registration if the authenticator cannot support large blob storage.
+    Required,
+    /// Prefer an authenticator with large blob support, but do not require it.
+    Preferred,
+}
+
+/// Registration-time input for the `largeBlob` extension (§10.5).
+#[derive(Debug, Clone)]
+pub struct LargeBlobRegistrationInput {
+    /// Whether large blob support is required or merely preferred.
+    pub support: LargeBlobSupport,
+}
+
+/// Authentication-time input for the `largeBlob` extension (§10.5).
+///
+/// `Read` and `Write` are mutually exclusive — the authenticator performs at
+/// most one large blob operation per assertion.
+#[derive(Debug, Clone)]
+pub enum LargeBlobAuthenticationInput {
+    /// Retrieve the blob previously stored for this credential.
+    Read,
+    /// Write these bytes as the credential's blob, replacing any existing value.
+    Write(Vec<u8>),
+}
+
+/// Registration input for the `credProtect` extension (§10.7, CTAP2).
+///
+/// This is a CTAP2-level extension: the RP requests a policy here, and the
+/// authenticator reports back whichever policy it actually enforced via
+/// [`crate::extensions::ExtensionView::cred_protect`].
+#[derive(Debug, Clone, Copy)]
+pub struct CredProtectInput {
+    /// The credential protection policy to request.
+    pub policy: CredProtectPolicy,
+    /// Whether the authenticator must fail registration if it cannot enforce
+    /// `policy`, rather than silently falling back to a weaker policy.
+    pub enforce: bool,
+}
+
+/// Client extension inputs for a registration ceremony (§9).
+///
+/// Every field is optional; unset fields are omitted from the `"extensions"`
+/// object sent to the browser. Construct and assign to
+/// [`RegistrationOptions::extensions`] after calling
+/// [`crate::RelyingParty::begin_registration`].
+///
+/// ```rust,no_run
+/// use webauthn::{RelyingParty, UserEntity, RegistrationExtensions};
+///
+/// let rp = RelyingParty::new("example.com", "https://example.com", "My Service");
+/// let user = UserEntity {
+///     id: b"user-42".to_vec(),
+///     name: "alice@example.com".to_string(),
+///     display_name: "Alice".to_string(),
+/// };
+/// let mut opts = rp.begin_registration(user, std::iter::empty::<Vec<u8>>())
+///     .expect("challenge generation failed");
+/// opts.extensions = Some(RegistrationExtensions {
+///     cred_props: Some(true),
+///     ..Default::default()
+/// });
+/// ```
+#[derive(Debug, Clone, Default)]
+pub struct RegistrationExtensions {
+    /// Request the `credProps` extension (§10.4) — ask the authenticator to
+    /// report whether the credential was created as a discoverable credential.
+    pub cred_props: Option<bool>,
+    /// Request the `prf` extension.
+    pub prf: Option<PrfInput>,
+    /// Request the `largeBlob` extension (§10.5).
+    pub large_blob: Option<LargeBlobRegistrationInput>,
+    /// Request the `credProtect` extension (§10.7, CTAP2).
+    pub cred_protect: Option<CredProtectInput>,
+    /// Request the `minPinLength` extension (§10.8) — ask the authenticator
+    /// to report its minimum PIN length.
+    pub min_pin_length: Option<bool>,
+}
+
+/// Client extension inputs for an authentication ceremony (§9).
+///
+/// Every field is optional; unset fields are omitted from the `"extensions"`
+/// object sent to the browser. Construct and assign to
+/// [`AuthenticationOptions::extensions`] after calling
+/// [`crate::RelyingParty::authentication_options`].
+#[derive(Debug, Clone, Default)]
+pub struct AuthenticationExtensions {
+    /// Request the `prf` extension, optionally evaluating a value immediately.
+    pub prf: Option<PrfInput>,
+    /// Request a `largeBlob` read or write for the asserted credential.
+    pub large_blob: Option<LargeBlobAuthenticationInput>,
+}
+
+// Private: maps `CredProtectPolicy` to the exact CTAP2 string value expected
+// by `credentialProtectionPolicy`. Note the capitalized "ID" in the middle
+// variant — this matches the FIDO CTAP2 spec's string constant exactly.
+fn cred_protect_policy_str(policy: CredProtectPolicy) -> &'static str {
+    match policy {
+        CredProtectPolicy::UserVerificationOptional => "userVerificationOptional",
+        CredProtectPolicy::UserVerificationOptionalWithCredentialIdList => {
+            "userVerificationOptionalWithCredentialIDList"
+        }
+        CredProtectPolicy::UserVerificationRequired => "userVerificationRequired",
+    }
+}
+
+impl serde::Serialize for PrfEvalInput {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        let size = if self.second.is_some() { 2 } else { 1 };
+        let mut map = s.serialize_map(Some(size))?;
+        map.serialize_entry("first", &URL_SAFE_NO_PAD.encode(&self.first))?;
+        if let Some(ref second) = self.second {
+            map.serialize_entry("second", &URL_SAFE_NO_PAD.encode(second))?;
+        }
+        map.end()
+    }
+}
+
+impl serde::Serialize for PrfInput {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        let mut map = s.serialize_map(Some(usize::from(self.eval.is_some())))?;
+        if let Some(ref eval) = self.eval {
+            map.serialize_entry("eval", eval)?;
+        }
+        map.end()
+    }
+}
+
+impl serde::Serialize for LargeBlobRegistrationInput {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        let mut map = s.serialize_map(Some(1))?;
+        map.serialize_entry("support", &self.support)?;
+        map.end()
+    }
+}
+
+impl serde::Serialize for LargeBlobAuthenticationInput {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        let mut map = s.serialize_map(Some(1))?;
+        match self {
+            LargeBlobAuthenticationInput::Read => map.serialize_entry("read", &true)?,
+            LargeBlobAuthenticationInput::Write(bytes) => {
+                map.serialize_entry("write", &URL_SAFE_NO_PAD.encode(bytes))?
+            }
+        }
+        map.end()
+    }
+}
+
+impl serde::Serialize for CredProtectInput {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        let mut map = s.serialize_map(Some(2))?;
+        map.serialize_entry(
+            "credentialProtectionPolicy",
+            cred_protect_policy_str(self.policy),
+        )?;
+        map.serialize_entry("enforceCredentialProtectionPolicy", &self.enforce)?;
+        map.end()
+    }
+}
+
+impl serde::Serialize for RegistrationExtensions {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        let count = [
+            self.cred_props.is_some(),
+            self.prf.is_some(),
+            self.large_blob.is_some(),
+            self.cred_protect.is_some(),
+            self.min_pin_length.is_some(),
+        ]
+        .into_iter()
+        .filter(|present| *present)
+        .count();
+        let mut map = s.serialize_map(Some(count))?;
+        if let Some(v) = self.cred_props {
+            map.serialize_entry("credProps", &v)?;
+        }
+        if let Some(ref v) = self.prf {
+            map.serialize_entry("prf", v)?;
+        }
+        if let Some(ref v) = self.large_blob {
+            map.serialize_entry("largeBlob", v)?;
+        }
+        if let Some(ref v) = self.cred_protect {
+            map.serialize_entry("credProtect", v)?;
+        }
+        if let Some(v) = self.min_pin_length {
+            map.serialize_entry("minPinLength", &v)?;
+        }
+        map.end()
+    }
+}
+
+impl serde::Serialize for AuthenticationExtensions {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        let count = [self.prf.is_some(), self.large_blob.is_some()]
+            .into_iter()
+            .filter(|present| *present)
+            .count();
+        let mut map = s.serialize_map(Some(count))?;
+        if let Some(ref v) = self.prf {
+            map.serialize_entry("prf", v)?;
+        }
+        if let Some(ref v) = self.large_blob {
+            map.serialize_entry("largeBlob", v)?;
+        }
+        map.end()
+    }
+}
+
 // ─── RegistrationOptions ─────────────────────────────────────────────────────
 
 /// Options for a registration ceremony, serialized as
@@ -228,6 +483,14 @@ pub struct RegistrationOptions {
 
     /// Optional criteria for selecting an authenticator.
     pub authenticator_selection: Option<AuthenticatorSelection>,
+
+    /// Client extension inputs requested for this ceremony.
+    ///
+    /// `None` (the default returned by [`crate::RelyingParty::begin_registration`])
+    /// omits the `"extensions"` field entirely. Set this on the returned value
+    /// before serializing to request `credProps`, `prf`, `largeBlob`,
+    /// `credProtect`, or `minPinLength`.
+    pub extensions: Option<RegistrationExtensions>,
 }
 
 // ─── AuthenticatorTransport ───────────────────────────────────────────────────
@@ -331,6 +594,13 @@ pub struct AuthenticationOptions {
     /// `Required` when `true`, `Preferred` otherwise. Serialized as
     /// `"userVerification"`.
     pub user_verification: UserVerificationRequirement,
+
+    /// Client extension inputs requested for this ceremony.
+    ///
+    /// `None` (the default returned by [`crate::RelyingParty::authentication_options`])
+    /// omits the `"extensions"` field entirely. Set this on the returned value
+    /// before serializing to request `prf` evaluation or a `largeBlob` read/write.
+    pub extensions: Option<AuthenticationExtensions>,
 }
 
 // ─── W3C-compliant Serialize impl for AuthenticationOptions ──────────────────
@@ -353,7 +623,8 @@ impl serde::Serialize for CredentialDescriptorSer<'_> {
 
 impl serde::Serialize for AuthenticationOptions {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut map = serializer.serialize_map(Some(5))?;
+        let field_count = 5 + if self.extensions.is_some() { 1 } else { 0 };
+        let mut map = serializer.serialize_map(Some(field_count))?;
 
         // "challenge": "<base64url, no padding>"
         map.serialize_entry("challenge", &URL_SAFE_NO_PAD.encode(&self.challenge.bytes))?;
@@ -374,6 +645,11 @@ impl serde::Serialize for AuthenticationOptions {
 
         // "userVerification": "required" | "preferred" | "discouraged"
         map.serialize_entry("userVerification", &self.user_verification)?;
+
+        // "extensions": { ... } — omitted when None
+        if let Some(ref exts) = self.extensions {
+            map.serialize_entry("extensions", exts)?;
+        }
 
         map.end()
     }
@@ -411,11 +687,12 @@ impl serde::Serialize for UserEntitySer<'_> {
 
 impl serde::Serialize for RegistrationOptions {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let field_count = 7 + if self.authenticator_selection.is_some() {
-            1
-        } else {
-            0
-        };
+        let field_count =
+            7 + if self.authenticator_selection.is_some() {
+                1
+            } else {
+                0
+            } + if self.extensions.is_some() { 1 } else { 0 };
         let mut map = serializer.serialize_map(Some(field_count))?;
 
         // "rp": { "id": "...", "name": "..." }
@@ -463,6 +740,137 @@ impl serde::Serialize for RegistrationOptions {
             map.serialize_entry("authenticatorSelection", sel)?;
         }
 
+        // "extensions": { ... } — omitted when None
+        if let Some(ref exts) = self.extensions {
+            map.serialize_entry("extensions", exts)?;
+        }
+
         map.end()
+    }
+}
+
+// ─── Tests ────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn registration_extensions_omits_unset_fields() {
+        let exts = RegistrationExtensions {
+            cred_props: Some(true),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&exts).expect("serialization failed");
+        assert_eq!(json, serde_json::json!({"credProps": true}));
+    }
+
+    #[test]
+    fn registration_extensions_empty_serializes_to_empty_object() {
+        let exts = RegistrationExtensions::default();
+        let json = serde_json::to_value(&exts).expect("serialization failed");
+        assert_eq!(json, serde_json::json!({}));
+    }
+
+    #[test]
+    fn prf_input_without_eval_requests_support_only() {
+        let input = PrfInput { eval: None };
+        let json = serde_json::to_value(&input).expect("serialization failed");
+        assert_eq!(json, serde_json::json!({}));
+    }
+
+    #[test]
+    fn prf_input_with_first_only() {
+        let input = PrfInput {
+            eval: Some(PrfEvalInput {
+                first: vec![0xAA, 0xBB],
+                second: None,
+            }),
+        };
+        let json = serde_json::to_value(&input).expect("serialization failed");
+        assert_eq!(json["eval"]["first"], URL_SAFE_NO_PAD.encode([0xAA, 0xBB]));
+        assert!(json["eval"].get("second").is_none());
+    }
+
+    #[test]
+    fn prf_input_with_first_and_second() {
+        let input = PrfInput {
+            eval: Some(PrfEvalInput {
+                first: vec![0x01],
+                second: Some(vec![0x02]),
+            }),
+        };
+        let json = serde_json::to_value(&input).expect("serialization failed");
+        assert_eq!(json["eval"]["first"], URL_SAFE_NO_PAD.encode([0x01]));
+        assert_eq!(json["eval"]["second"], URL_SAFE_NO_PAD.encode([0x02]));
+    }
+
+    #[test]
+    fn large_blob_registration_input_serializes_support() {
+        let input = LargeBlobRegistrationInput {
+            support: LargeBlobSupport::Required,
+        };
+        let json = serde_json::to_value(&input).expect("serialization failed");
+        assert_eq!(json, serde_json::json!({"support": "required"}));
+
+        let input = LargeBlobRegistrationInput {
+            support: LargeBlobSupport::Preferred,
+        };
+        let json = serde_json::to_value(&input).expect("serialization failed");
+        assert_eq!(json, serde_json::json!({"support": "preferred"}));
+    }
+
+    #[test]
+    fn large_blob_authentication_input_read() {
+        let json =
+            serde_json::to_value(LargeBlobAuthenticationInput::Read).expect("serialization failed");
+        assert_eq!(json, serde_json::json!({"read": true}));
+    }
+
+    #[test]
+    fn large_blob_authentication_input_write() {
+        let json = serde_json::to_value(LargeBlobAuthenticationInput::Write(vec![0xDE, 0xAD]))
+            .expect("serialization failed");
+        assert_eq!(
+            json,
+            serde_json::json!({"write": URL_SAFE_NO_PAD.encode([0xDE, 0xAD])})
+        );
+    }
+
+    #[test]
+    fn cred_protect_input_serializes_ctap2_policy_strings() {
+        let cases = [
+            (
+                CredProtectPolicy::UserVerificationOptional,
+                "userVerificationOptional",
+            ),
+            (
+                CredProtectPolicy::UserVerificationOptionalWithCredentialIdList,
+                "userVerificationOptionalWithCredentialIDList",
+            ),
+            (
+                CredProtectPolicy::UserVerificationRequired,
+                "userVerificationRequired",
+            ),
+        ];
+        for (policy, expected) in cases {
+            let input = CredProtectInput {
+                policy,
+                enforce: true,
+            };
+            let json = serde_json::to_value(input).expect("serialization failed");
+            assert_eq!(json["credentialProtectionPolicy"], expected);
+            assert_eq!(json["enforceCredentialProtectionPolicy"], true);
+        }
+    }
+
+    #[test]
+    fn authentication_extensions_omits_unset_fields() {
+        let exts = AuthenticationExtensions {
+            prf: Some(PrfInput { eval: None }),
+            large_blob: None,
+        };
+        let json = serde_json::to_value(&exts).expect("serialization failed");
+        assert_eq!(json, serde_json::json!({"prf": {}}));
     }
 }

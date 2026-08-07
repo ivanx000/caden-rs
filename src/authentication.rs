@@ -116,6 +116,7 @@ impl RelyingParty {
             rp_id: self.id.clone(),
             allow_credentials,
             user_verification,
+            extensions: None,
         })
     }
 
@@ -438,5 +439,74 @@ mod tests {
             .expect("authentication_options failed");
         let json = serde_json::to_value(&opts).expect("serialization failed");
         assert_eq!(json["userVerification"], "required");
+    }
+
+    // ── extension request tests ──────────────────────────────────────────────
+
+    #[test]
+    fn authentication_options_extensions_default_to_none() {
+        let opts = make_rp()
+            .authentication_options(std::iter::empty::<Vec<u8>>())
+            .expect("authentication_options failed");
+        assert!(opts.extensions.is_none());
+    }
+
+    #[test]
+    fn authentication_options_omits_extensions_key_when_none() {
+        let opts = make_rp()
+            .authentication_options(std::iter::empty::<Vec<u8>>())
+            .expect("authentication_options failed");
+        let json = serde_json::to_value(&opts).expect("serialization failed");
+        assert!(json.get("extensions").is_none());
+    }
+
+    #[test]
+    fn authentication_options_extensions_json_shape() {
+        use crate::options::{
+            AuthenticationExtensions, LargeBlobAuthenticationInput, PrfEvalInput, PrfInput,
+        };
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+
+        let mut opts = make_rp()
+            .authentication_options(std::iter::empty::<Vec<u8>>())
+            .expect("authentication_options failed");
+        opts.extensions = Some(AuthenticationExtensions {
+            prf: Some(PrfInput {
+                eval: Some(PrfEvalInput {
+                    first: vec![9, 9, 9],
+                    second: Some(vec![8, 8, 8]),
+                }),
+            }),
+            large_blob: Some(LargeBlobAuthenticationInput::Write(vec![7, 7, 7])),
+        });
+        let json = serde_json::to_value(&opts).expect("serialization failed");
+
+        assert_eq!(
+            json["extensions"]["prf"]["eval"]["first"],
+            URL_SAFE_NO_PAD.encode([9, 9, 9])
+        );
+        assert_eq!(
+            json["extensions"]["prf"]["eval"]["second"],
+            URL_SAFE_NO_PAD.encode([8, 8, 8])
+        );
+        assert_eq!(
+            json["extensions"]["largeBlob"]["write"],
+            URL_SAFE_NO_PAD.encode([7, 7, 7])
+        );
+    }
+
+    #[test]
+    fn authentication_options_large_blob_read_json_shape() {
+        use crate::options::{AuthenticationExtensions, LargeBlobAuthenticationInput};
+
+        let mut opts = make_rp()
+            .authentication_options(std::iter::empty::<Vec<u8>>())
+            .expect("authentication_options failed");
+        opts.extensions = Some(AuthenticationExtensions {
+            prf: None,
+            large_blob: Some(LargeBlobAuthenticationInput::Read),
+        });
+        let json = serde_json::to_value(&opts).expect("serialization failed");
+        assert_eq!(json["extensions"]["largeBlob"]["read"], true);
     }
 }

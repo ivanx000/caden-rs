@@ -147,8 +147,10 @@ pub use extensions::{
 };
 pub use metadata::{verify_and_parse_mds_blob, AuthenticatorStatus};
 pub use options::{
-    AttestationPreference, AuthenticationOptions, AuthenticatorAttachment, AuthenticatorSelection,
-    AuthenticatorTransport, PublicKeyCredentialDescriptor, RegistrationOptions,
+    AttestationPreference, AuthenticationExtensions, AuthenticationOptions,
+    AuthenticatorAttachment, AuthenticatorSelection, AuthenticatorTransport, CredProtectInput,
+    LargeBlobAuthenticationInput, LargeBlobRegistrationInput, LargeBlobSupport, PrfEvalInput,
+    PrfInput, PublicKeyCredentialDescriptor, RegistrationExtensions, RegistrationOptions,
     ResidentKeyRequirement, UserEntity, UserVerificationRequirement,
 };
 pub use registration::RelyingParty;
