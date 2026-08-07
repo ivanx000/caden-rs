@@ -961,4 +961,14 @@ mod tests {
                 || json["authenticatorSelection"].is_null()
         );
     }
+
+    #[test]
+    fn attestation_preference_enterprise_serializes_lowercase() {
+        let mut opts = make_rp()
+            .begin_registration(make_user(), std::iter::empty::<Vec<u8>>())
+            .expect("begin_registration failed");
+        opts.attestation = AttestationPreference::Enterprise;
+        let json = serde_json::to_value(&opts).expect("serialization failed");
+        assert_eq!(json["attestation"], "enterprise");
+    }
 }
