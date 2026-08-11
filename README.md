@@ -59,7 +59,9 @@ worthless without private keys), and password reuse (each site gets a unique key
 | Backup eligibility / state tracking (BE/BS flags, §6.1) | ✅ Implemented — `backup_eligible` and `backup_state` on `Credential`, `RegistrationResult`, `AuthenticationResult`; BE immutability enforced at authentication |
 | Backup eligibility policies (`require_backup_eligible` / `reject_backup_eligible`) | ✅ Implemented — opt-in; use to enforce sync-capable or hardware-bound-only credentials |
 | Cross-origin rejection (`reject_cross_origin`) | ✅ Implemented — opt-in; rejects responses with `crossOrigin: true` in `clientDataJSON` |
-| Typed extension accessors (`ExtensionView`, `CredProps`, `PrfExtension`) | ✅ Implemented — typed `credProps`, `appid`, `prf` accessors on `RegistrationResult` and `AuthenticationResult` |
+| Typed extension accessors (`ExtensionView`, `CredProps`, `PrfExtension`, `LargeBlobExtension`, `CredProtectPolicy`) | ✅ Implemented — typed `credProps`, `appid`, `prf`, `largeBlob`, `credProtect`, `minPinLength` accessors on `RegistrationResult` and `AuthenticationResult` |
+| Client extension request inputs (`RegistrationExtensions` / `AuthenticationExtensions`, §9) | ✅ Implemented — typed `extensions` field on `RegistrationOptions` / `AuthenticationOptions` covering `credProps`, `prf` eval, `largeBlob`, `credProtect`, `minPinLength` |
+| `attestationConveyancePreference: "enterprise"` (`AttestationPreference::Enterprise`) | ✅ Implemented — hint to the authenticator only; no additional RP-side verification (§5.4.7) |
 | Single-use challenge enforcement | ✅ Implemented — opt-in via `enforce_single_use_challenges(true)`; caller-managed by default |
 | Sign-count replay attack detection | ✅ Implemented |
 | Challenge generation (32-byte CSPRNG) | ✅ Implemented |
@@ -173,6 +175,13 @@ curl -s -X POST http://localhost:3000/register/begin \
 curl -s -X POST http://localhost:3000/authenticate/begin \
   -H 'Content-Type: application/json' \
   -d '{"credential_id":"<base64url-credential-id>"}' | jq .
+
+# Passkey (discoverable credential) authentication begin — no credential_id needed,
+# the browser lets the user pick from any matching passkey
+curl -s -X POST http://localhost:3000/passkey/authenticate/begin | jq .
+
+# Passkey authentication complete (paste session_id from begin response, then
+# build credential_id/clientDataJSON/authenticatorData/signature from your authenticator)
 ```
 
 ---

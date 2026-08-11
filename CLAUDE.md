@@ -50,9 +50,9 @@ The library follows the [W3C WebAuthn Level 3 specification](https://www.w3.org/
 | `src/client_data.rs` | `clientDataJSON` base64url → JSON → `ClientData` |
 | `src/authenticator_data.rs` | Binary authenticator data → `AuthenticatorData`; `CoseKey` enum |
 | `src/attestation.rs` | Attestation verification: "none", "packed", "fido-u2f", "android-key", "apple", "tpm", "android-safetynet" |
-| `src/extensions.rs` | Typed extension accessors: `ExtensionView`, `CredProps`, `PrfExtension`, `PrfValues` |
+| `src/extensions.rs` | Typed extension accessors: `ExtensionView`, `CredProps`, `PrfExtension`, `PrfValues`, `LargeBlobExtension`, `CredProtectPolicy` |
 | `src/metadata.rs` | FIDO MDS status consumption: `AuthenticatorStatus` enum + `is_compromised()` |
-| `src/options.rs` | Registration/authentication options: `RegistrationOptions`, `AuthenticationOptions`, `UserEntity`, `AuthenticatorSelection`, and supporting enums |
+| `src/options.rs` | Registration/authentication options: `RegistrationOptions`, `AuthenticationOptions`, `UserEntity`, `AuthenticatorSelection`, and supporting enums; client extension request inputs `RegistrationExtensions` / `AuthenticationExtensions` (§9) |
 | `src/registration.rs` | §7.1 registration ceremony; dispatches `CoseKey` → `PublicKey`; `begin_registration` options builder |
 | `src/authentication.rs` | §7.2 authentication ceremony; dispatches `PublicKey` → verifier |
 | `examples/demo.rs` | End-to-end demo: ES256, RS256, ES384, EdDSA registration/auth/replay |
@@ -561,6 +561,8 @@ A real Axum 0.7 HTTP server that exercises the full Caden library API:
 | `POST /register/complete` | Verify attestation, store credential |
 | `POST /authenticate/begin` | Issue authentication challenge |
 | `POST /authenticate/complete` | Verify assertion, update sign count |
+| `POST /passkey/authenticate/begin` | Issue discoverable-credential (passkey) challenge — empty `allowCredentials` |
+| `POST /passkey/authenticate/complete` | Verify a discoverable-credential assertion; looks up the credential by the `credential_id` in the response |
 
 State is in-memory (`tokio::sync::Mutex<HashMap<…>>`). `axum`, `tokio`, and `tower`
 added as dev-dependencies.
@@ -649,6 +651,54 @@ New types in `src/options.rs`: `UserEntity`, `RegistrationOptions`,
 `AuthenticatorAttachment`, `ResidentKeyRequirement`, `UserVerificationRequirement`,
 `PublicKeyCredentialDescriptor`, `AuthenticatorTransport`. All W3C JSON keys use
 camelCase; credential IDs are base64url-encoded with no padding.
+
+---
+
+## Post-v0.9.0 additions (unreleased)
+
+### `AttestationPreference::Enterprise`
+
+W3C §5.4.7 defines a fourth `attestationConveyancePreference` value,
+`"enterprise"`, for closed deployments with an out-of-band agreement between
+the RP and the authenticator vendor. It is purely a hint to the
+authenticator — `attestation.rs` performs the same verification regardless
+of which preference was requested; unlike `Direct`, there is no additional
+RP-side check for `Enterprise`.
+
+### Extended typed extension accessors
+
+`src/extensions.rs` gained three more accessors, following the existing
+`cred_props()` / `appid()` / `prf()` pattern:
+
+- `large_blob()` (`"largeBlob"`, §10.5) — returns `LargeBlobExtension` with
+  `supported` (registration), and `blob` / `written` (authentication read/write).
+- `cred_protect()` (`"credProtect"`, §10.7, CTAP2) — decodes the single CBOR
+  integer output into `CredProtectPolicy`.
+- `min_pin_length()` (`"minPinLength"`, §10.8) — returns `Option<u32>`.
+
+All new types are re-exported at the crate root alongside the existing
+extension types.
+
+### Client extension request inputs (§9)
+
+Until now, `RegistrationOptions` / `AuthenticationOptions` could only read
+back extension *outputs* via `ExtensionView` after a ceremony completed —
+there was no `"extensions"` field on the JSON sent to the browser for an
+authenticator to respond to. `src/options.rs` adds the request-side
+counterpart: `RegistrationExtensions` and `AuthenticationExtensions`, plus
+supporting input types `PrfEvalInput`, `PrfInput`, `LargeBlobSupport`,
+`LargeBlobRegistrationInput`, `LargeBlobAuthenticationInput`, and
+`CredProtectInput`. Both cover `credProps`, `prf` eval, `largeBlob`
+support/read/write, `credProtect` policy, and `minPinLength`, each with a
+manual `Serialize` impl that omits unset fields so the wire JSON only
+contains extensions the caller actually requested.
+
+Both `RegistrationOptions` and `AuthenticationOptions` gained a public
+`extensions: Option<...>` field, defaulting to `None`. Set it the same way
+`RegistrationOptions::attestation` is already overridden after
+`begin_registration` returns — this fits the existing stateless-builder
+style better than an RP-wide default, since PRF salts and large-blob
+read/write requests are inherently per-call.
 
 ---
 

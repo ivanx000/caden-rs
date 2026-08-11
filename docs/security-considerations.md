@@ -348,15 +348,21 @@ This library verifies the following attestation formats:
 | `"android-key"` | ECDSA-P256 signature; cert key == credential key; x5c chain order; optional trust anchor | Root against FIDO MDS |
 | `"apple"` | Apple nonce extension == SHA-256(authData \|\| clientDataHash); cert key == credential key; x5c chain order; optional trust anchor | Root against Apple MDS |
 | `"tpm"` | certInfo (magic, type, extraData, attested.name); pubArea key coordinates; x5c chain order; optional trust anchor | Root against FIDO MDS |
+| `"android-safetynet"` | Nested JWS signature (ES256/RS256); nonce == SHA-256(authData \|\| clientDataHash); leaf cert issued to `attest.android.com`; x5c chain order; optional trust anchor | Root against FIDO MDS |
 
 **What certificate chain verification would add:** linking the attestation key
 back to a manufacturer's root certificate via the FIDO Metadata Service (MDS)
 confirms that the credential was generated inside genuine FIDO2 hardware of a
-specific make and model. Without MDS, you cannot rule out software authenticator
-emulators.
+specific make and model. Without a pinned trust anchor, you cannot rule out
+software authenticator emulators.
 
-If you need full device provenance verification, integrate with the
-[FIDO Metadata Service (MDS)](https://fidoalliance.org/metadata/).
+`metadata::verify_and_parse_mds_blob(blob, trust_root)` verifies the JWS
+signature and `x5c` chain of a FIDO MDS BLOB and parses it into per-AAGUID
+status data for `RelyingParty::authenticator_metadata`, which rejects
+registrations from AAGUIDs marked `Revoked` or otherwise compromised. `caden`
+does not perform the HTTP fetch of the BLOB itself (e.g. from
+[mds3.fidoalliance.org](https://mds3.fidoalliance.org/)) — that remains the
+caller's responsibility, by design (stateless, no network I/O).
 
 ---
 

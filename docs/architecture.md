@@ -64,13 +64,20 @@ webauthn
 │         └── CoseKey::RSA { alg, n, e }         for RS256
 │
 ├── attestation.rs          Attestation statement verification
-│   └── verify()            Supports "none", "packed", "fido-u2f", "android-key", "apple", "tpm"
+│   └── verify()            Supports "none", "packed", "fido-u2f", "android-key", "apple", "tpm", "android-safetynet"
 │
 ├── extensions.rs           Typed extension accessors (§10.x)
 │   ├── ExtensionView       Borrow of the raw extension map with typed methods
 │   ├── CredProps           "credProps" — rk: Option<bool> (§10.4)
 │   ├── PrfExtension        "prf" — PRF output (first + optional second)
-│   └── PrfValues           PRF byte-string results
+│   ├── PrfValues           PRF byte-string results
+│   ├── LargeBlobExtension  "largeBlob" — supported / blob / written (§10.5)
+│   └── CredProtectPolicy   "credProtect" — enforced CTAP2 policy (§10.7)
+│
+├── metadata.rs             FIDO MDS status consumption + BLOB verification (§14.4)
+│   ├── AuthenticatorStatus       Mirrors the FIDO MDS AuthenticatorStatus values
+│   ├── verify_and_parse_mds_blob()  Verifies JWS + x5c chain, parses per-AAGUID status
+│   └── is_compromised()          True for Revoked / *Compromise / UserVerificationBypass
 │
 ├── options.rs              Registration / authentication options (W3C ceremony begin)
 │   ├── RegistrationOptions   → PublicKeyCredentialCreationOptions (JSON)
@@ -78,7 +85,8 @@ webauthn
 │   ├── UserEntity          id + name + display_name
 │   ├── AuthenticatorSelection  attachment + residentKey + userVerification
 │   ├── PublicKeyCredentialDescriptor  id + transports (allowCredentials / excludeCredentials)
-│   └── enums: AttestationPreference, AuthenticatorAttachment,
+│   ├── RegistrationExtensions / AuthenticationExtensions  client extension request inputs (§9)
+│   └── enums: AttestationPreference (incl. Enterprise), AuthenticatorAttachment,
 │              ResidentKeyRequirement, UserVerificationRequirement, AuthenticatorTransport
 │
 ├── registration.rs         §7.1 registration ceremony
@@ -280,10 +288,13 @@ Every error in this library follows three rules:
 
 ## Known limitations and future work
 
-- **FIDO Metadata Service** — attestation certificate chain order is verified for all
-  formats, and an optional trust anchor set can be pinned via `RelyingParty::trust_anchors()`.
-  However, full provenance verification (linking the chain to a genuine manufacturer root)
-  requires FIDO MDS integration, which is not implemented.
+- **FIDO Metadata Service — no BLOB fetch** — attestation certificate chain order is
+  verified for all formats, and an optional trust anchor set can be pinned via
+  `RelyingParty::trust_anchors()`. `metadata::verify_and_parse_mds_blob(blob, trust_root)`
+  verifies the MDS BLOB's JWS signature and `x5c` chain and parses it into per-AAGUID
+  status data for `RelyingParty::authenticator_metadata`, but `caden` does not perform
+  the HTTP fetch of the BLOB itself — that remains the caller's responsibility, by
+  design (stateless, no network I/O).
 - **ES512** — not supported; would require P-521 ring API.
 - **Token binding** — not checked.
 - **`crossOrigin` strict mode** — accepted by default. Enable `RelyingParty::reject_cross_origin(true)` to reject assertions with `crossOrigin: true` in `clientDataJSON` (§7.1 step 10 / §7.2 step 12).

@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`AttestationPreference::Enterprise`** (W3C §5.4.7) — the fourth
+  `attestationConveyancePreference` value, for closed deployments with an
+  out-of-band agreement between the RP and the authenticator vendor. Purely a
+  hint to the authenticator; `attestation.rs` verifies whatever statement
+  format arrives the same way regardless of which preference was requested.
+- **Typed accessors for `largeBlob`, `credProtect`, and `minPinLength`** —
+  `ExtensionView::large_blob()` (§10.5, returns `LargeBlobExtension`),
+  `ExtensionView::cred_protect()` (§10.7, CTAP2, returns `CredProtectPolicy`),
+  and `ExtensionView::min_pin_length()` (§10.8, returns `Option<u32>`), following
+  the existing `cred_props()` / `appid()` / `prf()` pattern in `src/extensions.rs`.
+- **Client extension request inputs** (§9) — `RegistrationOptions` and
+  `AuthenticationOptions` gained a public `extensions: Option<...>` field.
+  New types `RegistrationExtensions`, `AuthenticationExtensions`, `PrfEvalInput`,
+  `PrfInput`, `LargeBlobSupport`, `LargeBlobRegistrationInput`,
+  `LargeBlobAuthenticationInput`, and `CredProtectInput` cover `credProps`,
+  `prf` eval, `largeBlob` support/read/write, `credProtect` policy, and
+  `minPinLength`, with manual `Serialize` impls that omit unset fields.
+
 ## [0.9.0] — 2026-08-05
 
 ### Added
