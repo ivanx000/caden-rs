@@ -75,3 +75,7 @@ path = "examples/generate_vectors.rs"
 name = "server"
 path = "examples/server.rs"
 required-features = []
+
+[[example]]
+name = "mds_metadata"
+path = "examples/mds_metadata.rs"

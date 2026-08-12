@@ -57,6 +57,7 @@ The library follows the [W3C WebAuthn Level 3 specification](https://www.w3.org/
 | `src/authentication.rs` | §7.2 authentication ceremony; dispatches `PublicKey` → verifier |
 | `examples/demo.rs` | End-to-end demo: ES256, RS256, ES384, EdDSA registration/auth/replay |
 | `examples/server.rs` | Axum HTTP server: all 5 WebAuthn endpoints with in-memory state |
+| `examples/mds_metadata.rs` | FIDO MDS integration: build/verify a synthetic MDS BLOB, wire it into `RelyingParty::authenticator_metadata`, and see a registration from a `Revoked` AAGUID rejected |
 | `tests/integration.rs` | Integration tests for ES256, ES384, EdDSA, and RS256 full ceremony flows |
 
 ---

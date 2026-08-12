@@ -184,6 +184,18 @@ curl -s -X POST http://localhost:3000/passkey/authenticate/begin | jq .
 # build credential_id/clientDataJSON/authenticatorData/signature from your authenticator)
 ```
 
+### FIDO Metadata Service (MDS) integration
+
+Builds and verifies a synthetic MDS BLOB, wires the parsed per-AAGUID status
+data into `RelyingParty::authenticator_metadata`, and shows a registration
+from a `Revoked` AAGUID get rejected:
+
+```bash
+cargo run --example mds_metadata
+```
+
+Expected: the final line is `All checks passed.`
+
 ---
 
 ## Running tests

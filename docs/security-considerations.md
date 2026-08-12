@@ -362,7 +362,10 @@ status data for `RelyingParty::authenticator_metadata`, which rejects
 registrations from AAGUIDs marked `Revoked` or otherwise compromised. `caden`
 does not perform the HTTP fetch of the BLOB itself (e.g. from
 [mds3.fidoalliance.org](https://mds3.fidoalliance.org/)) — that remains the
-caller's responsibility, by design (stateless, no network I/O).
+caller's responsibility, by design (stateless, no network I/O). See
+`examples/mds_metadata.rs` for a full worked example: build/verify a BLOB,
+wire it into a `RelyingParty`, and watch a registration from a `Revoked`
+AAGUID get rejected (`cargo run --example mds_metadata`).
 
 ---
 
